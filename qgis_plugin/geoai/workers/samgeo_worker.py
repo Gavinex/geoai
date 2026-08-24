@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """SamGeo inference worker process for the GeoAI QGIS plugin.
 
-This script is launched by the plugin using the managed venv Python so torch and
+This script is launched by the plugin using approved Python with the managed
+package directory so torch and
 samgeo load outside the QGIS process.
 """
 
@@ -16,6 +17,7 @@ import traceback
 from typing import Any
 
 _PROTO_STDOUT = sys.stdout
+_DLL_HANDLES = []
 
 _STATE = {
     "sam": None,
@@ -29,14 +31,16 @@ def _bootstrap_windows_torch_dll_dirs() -> None:
     if sys.platform != "win32":
         return
 
-    try:
-        import sysconfig
+    site_packages = os.environ.get("GEOAI_RUNTIME_SITE_PACKAGES")
+    if not site_packages:
+        try:
+            import sysconfig
 
-        site_packages = sysconfig.get_paths().get(
-            "platlib"
-        ) or sysconfig.get_paths().get("purelib")
-    except Exception:
-        site_packages = None
+            site_packages = sysconfig.get_paths().get(
+                "platlib"
+            ) or sysconfig.get_paths().get("purelib")
+        except Exception:
+            site_packages = None
 
     if not site_packages:
         return
@@ -47,13 +51,12 @@ def _bootstrap_windows_torch_dll_dirs() -> None:
         os.path.join(site_packages, "torchvision"),
     ]
     path_parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
-    _dll_handles: list = []
     for dll_dir in dll_dirs:
         if not os.path.isdir(dll_dir):
             continue
         if hasattr(os, "add_dll_directory"):
             try:
-                _dll_handles.append(os.add_dll_directory(dll_dir))
+                _DLL_HANDLES.append(os.add_dll_directory(dll_dir))
             except OSError:
                 pass
         if dll_dir not in path_parts:

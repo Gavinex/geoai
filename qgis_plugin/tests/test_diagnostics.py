@@ -6,7 +6,11 @@ from geoai.core import diagnostics
 
 
 def test_diagnostics_report_is_github_markdown(monkeypatch):
-    monkeypatch.setenv("HOME", "/home/testuser")
+    monkeypatch.setattr(
+        diagnostics.os.path,
+        "expanduser",
+        lambda path: "/home/testuser" if path == "~" else path,
+    )
     monkeypatch.setattr(
         diagnostics,
         "_get_nvidia_gpu_detection",
@@ -78,8 +82,8 @@ def test_diagnostics_report_is_github_markdown(monkeypatch):
     report = diagnostics.generate_diagnostics_report()
 
     assert report.startswith("# GeoAI QGIS Diagnostics Report")
-    assert "## Managed Environment" in report
-    assert "- Virtual environment path: `~/.qgis_geoai/venv_py3.12`" in report
+    assert "## Managed Runtime" in report
+    assert "- Runtime directory: `~/.qgis_geoai/venv_py3.12`" in report
     assert "/home/testuser" not in report
     assert "`~/.qgis_geoai/venv_py3.12/bin/python3`" in report
     assert "`~/.qgis_geoai/venv_py3.12/lib/python3.12/site-packages" in report
@@ -219,13 +223,13 @@ def test_diagnostics_report_handles_missing_venv(monkeypatch):
     monkeypatch.setattr(
         diagnostics,
         "_collect_venv_runtime_info",
-        lambda _venv_info: {"error": "Virtual environment does not exist."},
+        lambda _venv_info: {"error": "Managed package directory does not exist."},
     )
 
     report = diagnostics.generate_diagnostics_report()
 
-    assert "- Virtual environment exists: `No`" in report
-    assert "- Error: `Virtual environment does not exist.`" in report
+    assert "- Package directory exists: `No`" in report
+    assert "- Error: `Managed package directory does not exist.`" in report
 
 
 def test_diagnostics_import_probes_bootstrap_windows_torch_dll_dirs():

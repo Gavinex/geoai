@@ -356,15 +356,17 @@ def _load_geoai_from_path(init_path: Path) -> Optional[ModuleType]:
 
 
 def _try_ensure_venv_available():
-    """Add the GeoAI plugin venv site-packages to sys.path if available."""
+    """Add the GeoAI managed site-packages to sys.path if available."""
     try:
-        from .core.venv_manager import ensure_venv_packages_available, venv_exists
+        from .core.venv_manager import ensure_venv_packages_available, runtime_is_ready
 
-        if venv_exists():
+        if runtime_is_ready():
             ensure_venv_packages_available()
-            _diag.append("Strategy 0: venv exists, site-packages added to sys.path")
+            _diag.append(
+                "Strategy 0: managed runtime exists, site-packages added to sys.path"
+            )
         else:
-            _diag.append("Strategy 0: venv does not exist")
+            _diag.append("Strategy 0: managed runtime is not ready")
     except Exception as exc:
         _diag.append(f"Strategy 0: exception: {exc}")
 
@@ -374,7 +376,7 @@ def get_geoai() -> ModuleType:
 
     Tries four strategies in order:
 
-    0. Ensure the plugin's managed venv site-packages is on ``sys.path``.
+    0. Ensure the plugin's managed site-packages is on ``sys.path``.
     1. Normal ``import geoai`` — works when the plugin is NOT named ``geoai``.
     2. Locate the installed distribution (``geoai-py`` or ``geoai``) via
        ``importlib.metadata`` and load the library from its file path.
@@ -389,7 +391,7 @@ def get_geoai() -> ModuleType:
     _diag.clear()
     _diag.append(f"Plugin __file__: {__file__}")
 
-    # Strategy 0: ensure venv packages are available on sys.path
+    # Strategy 0: ensure managed packages are available on sys.path
     _try_ensure_venv_available()
 
     # Strategy 1: normal import (works when plugin package is NOT named `geoai`)
@@ -420,7 +422,7 @@ def get_geoai() -> ModuleType:
 
     # Strategy 3: direct sys.path scan
     _diag.append("Strategy 3: sys.path filesystem scan")
-    # Log the first few sys.path entries containing "geoai" or the venv
+    # Log the first few sys.path entries containing "geoai" or the runtime
     _cache_marker = (
         os.environ.get("GEOAI_CACHE_DIR")
         or os.environ.get("GEOAI_VENV_DIR")
@@ -442,27 +444,27 @@ def get_geoai() -> ModuleType:
 
     diag_text = "\n".join(_diag)
 
-    # Check if the venv geoai package exists on disk
-    venv_check = ""
+    # Check if the managed geoai package exists on disk
+    runtime_check = ""
     try:
         from .core.venv_manager import VENV_DIR, get_venv_site_packages
 
         sp = get_venv_site_packages()
         geoai_in_venv = os.path.join(sp, "geoai", "__init__.py")
-        venv_check = (
-            f"\n\nVenv check:\n"
+        runtime_check = (
+            f"\n\nManaged runtime check:\n"
             f"  VENV_DIR: {VENV_DIR}\n"
             f"  site-packages: {sp}\n"
             f"  exists: {os.path.exists(sp)}\n"
             f"  geoai/__init__.py exists: {os.path.exists(geoai_in_venv)}"
         )
     except Exception as exc:
-        venv_check = f"\n\nVenv check failed: {exc}"
+        runtime_check = f"\n\nManaged runtime check failed: {exc}"
 
     raise ImportError(
         "GeoAI plugin could not import the external 'geoai' library.\n\n"
         f"QGIS Python:\n  executable: {py}\n  version: {ver}\n"
-        f"{venv_check}\n\n"
+        f"{runtime_check}\n\n"
         f"Strategy diagnostics:\n{diag_text}\n\n"
         "Fix: Click any GeoAI toolbar button to open the dependency installer,\n"
         "which will automatically download and install all required packages.\n\n"

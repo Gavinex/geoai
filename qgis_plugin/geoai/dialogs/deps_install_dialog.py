@@ -59,7 +59,7 @@ class DepsInstallDockWidget(QDockWidget):
             "GeoAI needs an isolated Python runtime before you can use it.\n\n"
             "Corporate setup will:\n"
             "  \u2022 Use QGIS Python or the IT-approved GEOAI_PYTHON\n"
-            "  \u2022 Create an environment with Python's built-in venv\n"
+            "  \u2022 Create a private site-packages directory\n"
             "  \u2022 Install with standard pip from an approved index or wheelhouse\n\n"
             "It does not download Python, uv, Conda, PowerShell scripts, or Git."
         )

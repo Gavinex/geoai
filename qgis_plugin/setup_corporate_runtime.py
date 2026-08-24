@@ -15,16 +15,16 @@ import subprocess
 import sys
 
 
-def _venv_python(runtime_dir: Path) -> Path:
-    if os.name == "nt":
-        return runtime_dir / "Scripts" / "python.exe"
-    return runtime_dir / "bin" / "python3"
+def _site_packages(runtime_dir: Path) -> Path:
+    return runtime_dir / "site-packages"
 
 
-def _run(command: list[str], dry_run: bool = False) -> None:
+def _run(
+    command: list[str], dry_run: bool = False, env: dict[str, str] | None = None
+) -> None:
     print(" ".join(f'"{part}"' if " " in part else part for part in command))
     if not dry_run:
-        subprocess.check_call(command)
+        subprocess.check_call(command, env=env)
 
 
 def _validate_python(python_path: Path) -> tuple[int, int]:
@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--runtime-dir",
         type=Path,
-        help="Destination virtual environment (defaults to ~/.qgis_geoai/venv_pyX.Y)",
+        help="Destination runtime directory (defaults to ~/.qgis_geoai/venv_pyX.Y)",
     )
     parser.add_argument(
         "--wheelhouse",
@@ -105,17 +105,26 @@ def main() -> int:
     print(f"Approved Python: {python_path} ({major}.{minor})")
     print(f"Runtime: {runtime_dir}")
 
-    runtime_python = _venv_python(runtime_dir)
-    if not runtime_python.is_file():
-        runtime_dir.parent.mkdir(parents=True, exist_ok=True)
-        _run([str(python_path), "-m", "venv", str(runtime_dir)], args.dry_run)
+    package_root = _site_packages(runtime_dir)
+    package_root.mkdir(parents=True, exist_ok=True)
+    runtime_environment = os.environ.copy()
+    runtime_environment["PYTHONPATH"] = str(package_root)
+    runtime_environment["GEOAI_RUNTIME_SITE_PACKAGES"] = str(package_root)
+    if os.name == "nt":
+        native_paths = [package_root / "torch" / "lib", package_root / "torch" / "bin"]
+        existing_path = runtime_environment.get("PATH", "")
+        runtime_environment["PATH"] = os.pathsep.join(
+            [*(str(path) for path in native_paths), existing_path]
+        )
 
-    install_python = runtime_python if not args.dry_run else runtime_python
     command = [
-        str(install_python),
+        str(python_path),
         "-m",
         "pip",
         "install",
+        "--target",
+        str(package_root),
+        "--upgrade",
         "--disable-pip-version-check",
         "--prefer-binary",
         "--requirement",
@@ -134,17 +143,24 @@ def main() -> int:
     for host in args.trusted_host:
         command.extend(["--trusted-host", host])
 
-    _run(command, args.dry_run)
+    marker_path = runtime_dir / "geoai-runtime-ready.txt"
+    if not args.dry_run:
+        marker_path.unlink(missing_ok=True)
+    _run(command, args.dry_run, env=runtime_environment)
     if not args.dry_run:
         _run(
             [
-                str(runtime_python),
+                str(python_path),
                 "-c",
                 (
                     "import torch, torchvision, geoai, samgeo, sam3, safetensors; "
                     "print('GeoAI runtime verified')"
                 ),
-            ]
+            ],
+            env=runtime_environment,
+        )
+        marker_path.write_text(
+            "approved-python-package-directory\n", encoding="utf-8"
         )
 
     print("\nSet these variables before starting QGIS:")

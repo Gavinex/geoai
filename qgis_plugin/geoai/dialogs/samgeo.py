@@ -64,7 +64,7 @@ def _use_samgeo_subprocess() -> bool:
 
     Importing the managed venv's packages into the QGIS process is unsafe on
     every platform, not just Windows. QGIS ships its own NumPy and imports it
-    at startup, so prepending the venv's site-packages to ``sys.path`` cannot
+    at startup, so prepending the managed site-packages to ``sys.path`` cannot
     displace it: the venv's SciPy/scikit stack (built for NumPy 2) then runs
     against QGIS's NumPy 1.x and fails on NumPy-2-only names --
     ``numpy.lib.array_utils`` (issue #688) and ``np.long`` reached via
@@ -85,9 +85,9 @@ def _use_samgeo_subprocess() -> bool:
     if os.name == "nt":
         return True
 
-    from ..core.venv_manager import venv_exists
+    from ..core.venv_manager import runtime_is_ready
 
-    return venv_exists()
+    return runtime_is_ready()
 
 
 class SamGeoModelLoadWorker(QThread):

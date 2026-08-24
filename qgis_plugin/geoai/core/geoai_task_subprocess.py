@@ -1,4 +1,4 @@
-"""Run geoai tasks in a subprocess using the plugin-managed venv Python."""
+"""Run GeoAI tasks in a subprocess using the approved Python runtime."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .venv_manager import (
-    _get_clean_env_for_venv,
+    _get_runtime_env,
     _get_subprocess_kwargs,
     get_venv_python_path,
-    venv_exists,
+    runtime_is_ready,
 )
 
 ProgressCallback = Optional[Callable[[str], None]]
@@ -25,12 +25,12 @@ def run_geoai_task(
     progress_callback: ProgressCallback = None,
 ) -> Any:
     """Run a geoai task in a subprocess and return its JSON-serializable result."""
-    if not venv_exists():
-        raise RuntimeError("GeoAI virtual environment not found. Install dependencies.")
+    if not runtime_is_ready():
+        raise RuntimeError("GeoAI package runtime not found. Install dependencies.")
 
     python_path = get_venv_python_path()
     if not os.path.exists(python_path):
-        raise FileNotFoundError(f"Venv Python not found: {python_path}")
+        raise FileNotFoundError(f"Approved Python not found: {python_path}")
 
     worker_script = (
         Path(__file__).resolve().parents[1] / "workers" / "geoai_task_worker.py"
@@ -39,7 +39,7 @@ def run_geoai_task(
         raise FileNotFoundError(f"geoai task worker not found: {worker_script}")
 
     cmd = [python_path, "-u", str(worker_script)]
-    env = _get_clean_env_for_venv()
+    env = _get_runtime_env()
     popen_kwargs = dict(_get_subprocess_kwargs())
 
     stderr_file = None

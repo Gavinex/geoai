@@ -13,13 +13,14 @@ from typing import Any, Dict, Iterable, List, Optional
 from .venv_manager import (
     CACHE_DIR,
     VENV_DIR,
-    _get_clean_env_for_venv,
+    _get_runtime_env,
     _get_subprocess_kwargs,
     _get_windows_dll_setup_code,
     detect_nvidia_gpu,
     get_venv_python_path,
     get_venv_site_packages,
     is_corporate_mode,
+    runtime_is_ready,
     venv_exists,
 )
 
@@ -83,14 +84,15 @@ def generate_diagnostics_report() -> str:
         f"- Machine: `{_value(system_info.get('machine'))}`",
         f"- Processor: `{_value(system_info.get('processor'))}`",
         "",
-        "## Managed Environment",
+        "## Managed Runtime",
         "",
         f"- Corporate runtime mode: `{_yes_no(is_corporate_mode())}`",
         f"- Cache directory: `{_value(venv_info['cache_dir'])}`",
-        f"- Virtual environment path: `{_value(venv_info['venv_dir'])}`",
-        f"- Virtual environment exists: `{_yes_no(venv_info['exists'])}`",
-        f"- Virtual environment Python: `{_value(venv_info['python_path'])}`",
-        f"- Virtual environment site-packages: `{_value(venv_info['site_packages'])}`",
+        f"- Runtime directory: `{_value(venv_info['venv_dir'])}`",
+        f"- Package directory exists: `{_yes_no(venv_info['exists'])}`",
+        f"- Runtime verified: `{_yes_no(venv_info.get('ready', False))}`",
+        f"- Approved Python: `{_value(venv_info['python_path'])}`",
+        f"- Managed site-packages: `{_value(venv_info['site_packages'])}`",
         f"- GEOAI_CACHE_DIR: `{_value(os.environ.get('GEOAI_CACHE_DIR'), '<unset>')}`",
         f"- GEOAI_VENV_DIR: `{_value(os.environ.get('GEOAI_VENV_DIR'), '<unset>')}`",
         f"- GEOAI_RUNTIME_DIR: `{_value(os.environ.get('GEOAI_RUNTIME_DIR'), '<unset>')}`",
@@ -110,7 +112,7 @@ def generate_diagnostics_report() -> str:
     if gpu_detect_info["error"]:
         lines.append(f"- NVIDIA detection error: `{_value(gpu_detect_info['error'])}`")
 
-    lines.extend(["", "## Venv Runtime", ""])
+    lines.extend(["", "## Runtime Probe", ""])
     if venv_runtime.get("error"):
         lines.append(f"- Error: `{_value(venv_runtime['error'])}`")
     else:
@@ -195,6 +197,7 @@ def _get_venv_info() -> Dict[str, Any]:
         "cache_dir": CACHE_DIR,
         "venv_dir": VENV_DIR,
         "exists": venv_exists(),
+        "ready": runtime_is_ready(),
         "python_path": get_venv_python_path(),
         "site_packages": get_venv_site_packages(),
     }
@@ -202,13 +205,13 @@ def _get_venv_info() -> Dict[str, Any]:
 
 def _collect_venv_runtime_info(venv_info: Dict[str, Any]) -> Dict[str, Any]:
     if not venv_info["exists"]:
-        return {"error": "Virtual environment does not exist."}
+        return {"error": "Managed package directory does not exist."}
 
     python_path = venv_info["python_path"]
     if not os.path.exists(python_path):
-        return {"error": f"Virtual environment Python not found: {python_path}"}
+        return {"error": f"Approved Python not found: {python_path}"}
 
-    env = _get_clean_env_for_venv()
+    env = _get_runtime_env(venv_info["venv_dir"])
     env.setdefault("TRANSFORMERS_VERBOSITY", "error")
     env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     subprocess_kwargs = _get_subprocess_kwargs()

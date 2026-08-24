@@ -1,7 +1,7 @@
 """Subprocess-backed Moondream client for QGIS.
 
-Runs torch-dependent Moondream inference in the plugin venv's Python process
-to avoid DLL conflicts with QGIS's embedded Python on Windows.
+Runs torch-dependent Moondream inference in an approved Python process to avoid
+DLL conflicts with QGIS's embedded Python on Windows.
 """
 
 from __future__ import annotations
@@ -18,10 +18,10 @@ from typing import Any, Dict, Optional
 from qgis.core import Qgis, QgsMessageLog
 
 from .venv_manager import (
-    _get_clean_env_for_venv,
+    _get_runtime_env,
     _get_subprocess_kwargs,
     get_venv_python_path,
-    venv_exists,
+    runtime_is_ready,
 )
 
 
@@ -52,21 +52,21 @@ class MoondreamSubprocessClient:
             if self._is_running():
                 return
 
-            if not venv_exists():
+            if not runtime_is_ready():
                 raise RuntimeError(
-                    "GeoAI virtual environment not found. Install dependencies first."
+                    "GeoAI package runtime not found. Install dependencies first."
                 )
 
             python_path = get_venv_python_path()
             if not os.path.exists(python_path):
-                raise FileNotFoundError(f"Venv Python not found: {python_path}")
+                raise FileNotFoundError(f"Approved Python not found: {python_path}")
             if not self.worker_script.exists():
                 raise FileNotFoundError(
                     f"Moondream worker script not found: {self.worker_script}"
                 )
 
             cmd = [python_path, "-u", str(self.worker_script)]
-            env = _get_clean_env_for_venv()
+            env = _get_runtime_env()
             popen_kwargs = dict(_get_subprocess_kwargs())
 
             try:

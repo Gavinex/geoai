@@ -19,22 +19,26 @@ def test_use_subprocess_on_windows_without_venv(monkeypatch):
     assert samgeo._use_samgeo_subprocess() is True
 
 
-def test_use_subprocess_on_posix_when_venv_exists(monkeypatch):
+def test_use_subprocess_on_posix_when_runtime_is_ready(monkeypatch):
     """Regression test for issue #854: macOS/Linux must not import in-process."""
     from geoai.core import venv_manager
 
     monkeypatch.setattr(samgeo.os, "name", "posix")
-    monkeypatch.setattr(venv_manager, "venv_exists", lambda _venv_dir=None: True)
+    monkeypatch.setattr(
+        venv_manager, "runtime_is_ready", lambda _venv_dir=None: True
+    )
 
     assert samgeo._use_samgeo_subprocess() is True
 
 
-def test_in_process_on_posix_without_venv(monkeypatch):
-    """No managed venv means no version skew, so keep the in-process path."""
+def test_in_process_on_posix_without_ready_runtime(monkeypatch):
+    """No ready managed runtime means no version skew, so keep in-process."""
     from geoai.core import venv_manager
 
     monkeypatch.setattr(samgeo.os, "name", "posix")
-    monkeypatch.setattr(venv_manager, "venv_exists", lambda _venv_dir=None: False)
+    monkeypatch.setattr(
+        venv_manager, "runtime_is_ready", lambda _venv_dir=None: False
+    )
 
     assert samgeo._use_samgeo_subprocess() is False
 

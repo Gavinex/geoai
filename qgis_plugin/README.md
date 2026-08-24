@@ -20,7 +20,21 @@ A corporate-friendly fork of the [upstream GeoAI plugin](https://github.com/open
 4. Set `GEOAI_RUNTIME_DIR` to the runtime printed by the script before QGIS starts, install the plugin ZIP, and enable **GeoAI Corporate**.
 5. In **Segment Anything → Model**, either select an IT-provisioned checkpoint or click **Download Public SAM 3.1**. The 1.63 GiB file is public, pinned, checksum-verified, and needs no Hugging Face account or token. It remains subject to the [SAM License](geoai/runtime/MODEL_NOTICE.md), which company legal/security teams should approve before deployment.
 
-The built-in setup panel uses the same standard-library `venv` and pip path. Package sources can be controlled with `GEOAI_WHEELHOUSE`, `GEOAI_PIP_INDEX_URL`, `GEOAI_PIP_EXTRA_INDEX_URL`, and `GEOAI_PIP_CERT`. TLS verification is never disabled unless IT explicitly sets `GEOAI_PIP_TRUSTED_HOST` or `GEOAI_ALLOW_INSECURE_INSTALL=1`.
+The built-in setup panel uses the same approved Python and installs into a private `site-packages` directory with `pip --target`. Package sources can be controlled with `GEOAI_WHEELHOUSE`, `GEOAI_PIP_INDEX_URL`, `GEOAI_PIP_EXTRA_INDEX_URL`, and `GEOAI_PIP_CERT`. TLS verification is never disabled unless IT explicitly sets `GEOAI_PIP_TRUSTED_HOST` or `GEOAI_ALLOW_INSECURE_INSTALL=1`.
+
+### Windows group policy (`WinError 1260`)
+
+If setup reports `WinError 1260`, Windows is blocking the selected approved Python executable. Pip settings cannot resolve this. Ask IT to provision or allow that Python executable, choose a writable directory for the private package files, and set `GEOAI_RUNTIME_DIR` to it before starting QGIS. `GEOAI_PYTHON` must point to an approved Python with the same major and minor version as QGIS. The runtime does not create or launch a generated `Scripts\\python.exe`.
+
+For example, IT can provision a runtime in an allowlisted directory with:
+
+```powershell
+$env:GEOAI_PYTHON = "C:\\Program Files\\Python312\\python.exe"
+$env:GEOAI_RUNTIME_DIR = "C:\\ProgramData\\GeoAI\\geoai-py3.12"
+python qgis_plugin/setup_corporate_runtime.py --python $env:GEOAI_PYTHON --runtime-dir $env:GEOAI_RUNTIME_DIR
+```
+
+Start QGIS with the same `GEOAI_RUNTIME_DIR` value. The directory only stores package files and metadata; the approved Python executable is the only runtime interpreter that is launched.
 
 ## Video Tutorials
 
@@ -392,7 +406,7 @@ Go to `GeoAI` menu → `Check for Updates...` to see if a newer version of the G
 
 ### Diagnostics Report
 
-Go to `GeoAI` menu → `Generate Diagnostics Report...` to create a Markdown report that can be copied directly into a GitHub issue. The report includes the plugin version, QGIS/Python runtime, operating system, managed virtual environment path, CUDA availability, GPU details, and versions/import status for key packages such as `geoai-py`, PyTorch, SAM3, Transformers, and `segment-geospatial`.
+Go to `GeoAI` menu → `Generate Diagnostics Report...` to create a Markdown report that can be copied directly into a GitHub issue. The report includes the plugin version, QGIS/Python runtime, operating system, managed package runtime path, CUDA availability, GPU details, and versions/import status for key packages such as `geoai-py`, PyTorch, SAM3, Transformers, and `segment-geospatial`.
 
 ## Supported Model Architectures (Segmentation)
 

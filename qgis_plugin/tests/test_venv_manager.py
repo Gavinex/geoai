@@ -24,7 +24,7 @@ def test_corporate_mode_is_default():
     assert venv_manager.is_corporate_mode() is True
 
 
-def test_corporate_venv_uses_approved_python_not_uv(tmp_path, monkeypatch):
+def test_corporate_runtime_uses_package_directory_not_uv(tmp_path, monkeypatch):
     from geoai.core import uv_manager
 
     calls = []
@@ -35,20 +35,59 @@ def test_corporate_venv_uses_approved_python_not_uv(tmp_path, monkeypatch):
         "get_uv_path",
         lambda: (_ for _ in ()).throw(AssertionError("uv must not be used")),
     )
-    monkeypatch.setattr(venv_manager, "_get_clean_env_for_venv", lambda: {})
-    monkeypatch.setattr(venv_manager, "_get_subprocess_kwargs", lambda: {})
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(venv_manager.subprocess, "run", fake_run)
-
     ok, _ = venv_manager.create_venv(str(tmp_path / "runtime"))
 
     assert ok is True
-    assert calls[0] == ["approved-python", "-m", "venv", str(tmp_path / "runtime")]
-    assert all("uv" not in command[0] for command in calls)
+    assert (tmp_path / "runtime" / "site-packages").is_dir()
+    assert calls == []
+
+
+def test_runtime_is_ready_requires_marker(tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    (runtime_dir / "site-packages").mkdir(parents=True)
+
+    assert venv_manager.venv_exists(str(runtime_dir)) is True
+    assert venv_manager.runtime_is_ready(str(runtime_dir)) is False
+
+    venv_manager._write_runtime_ready_marker(str(runtime_dir))
+    assert venv_manager.runtime_is_ready(str(runtime_dir)) is True
+
+    venv_manager._remove_runtime_ready_marker(str(runtime_dir))
+    assert venv_manager.runtime_is_ready(str(runtime_dir)) is False
+
+
+def test_install_dependencies_invalidates_existing_readiness_marker(
+    tmp_path, monkeypatch
+):
+    runtime_dir = tmp_path / "runtime"
+    (runtime_dir / "site-packages").mkdir(parents=True)
+    venv_manager._write_runtime_ready_marker(str(runtime_dir))
+
+    monkeypatch.setattr(venv_manager, "_get_required_packages", lambda: [])
+
+    ok, _message = venv_manager.install_dependencies(str(runtime_dir))
+
+    assert ok is True
+    assert venv_manager.runtime_is_ready(str(runtime_dir)) is False
+
+
+def test_create_venv_reports_windows_policy_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(venv_manager.sys, "platform", "win32")
+    monkeypatch.setattr(
+        venv_manager,
+        "_get_system_python",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError("[WinError 1260] This program is blocked by group policy.")
+        ),
+    )
+
+    runtime_dir = tmp_path / "runtime"
+    ok, message = venv_manager.create_venv(str(runtime_dir))
+
+    assert ok is False
+    assert "Windows group policy" in message
+    assert "GEOAI_RUNTIME_DIR" in message
+    assert str(runtime_dir) in message
 
 
 def test_corporate_orchestration_skips_bootstrap_downloads(tmp_path, monkeypatch):
@@ -77,7 +116,7 @@ def test_corporate_orchestration_skips_bootstrap_downloads(tmp_path, monkeypatch
     )
 
     assert ok is True
-    assert message == "Virtual environment ready"
+    assert message == "Managed runtime ready"
     assert any("no bootstrap executables downloaded" in text for _, text in progress)
 
 
@@ -169,6 +208,27 @@ def test_uv_ssl_flags_use_native_tls_without_insecure_hosts():
 
     assert "--native-tls" in flags
     assert "--allow-insecure-host" not in flags
+
+
+def test_pip_install_commands_target_managed_site_packages(tmp_path):
+    target = str(tmp_path / "site-packages")
+    command = ["python", "-m", "pip", "install", "--upgrade", "geoai-py"]
+
+    result = venv_manager._add_runtime_target(
+        command,
+        {"GEOAI_RUNTIME_SITE_PACKAGES": target},
+    )
+
+    assert result == [
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "--target",
+        target,
+        "--upgrade",
+        "geoai-py",
+    ]
 
 
 def test_uv_insecure_host_flags_allow_pytorch_wheel_host():
@@ -422,7 +482,7 @@ def test_verify_venv_treats_macos_sam3_import_failure_as_optional(monkeypatch):
     ready, message = venv_manager.verify_venv("/tmp/geoai-test-venv")
 
     assert ready is True
-    assert message == "Virtual environment ready (optional packages unavailable: sam3)"
+    assert message == "Managed runtime ready (optional packages unavailable: sam3)"
     assert calls == ["torch", "sam3", "geoai-py"]
 
 

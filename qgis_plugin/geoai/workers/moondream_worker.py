@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Moondream inference worker process for the GeoAI QGIS plugin.
 
-This script is launched by the plugin using the managed venv Python so
+This script is launched by the plugin using approved Python with the managed
+package directory so
 torch loads outside the QGIS process.
 """
 

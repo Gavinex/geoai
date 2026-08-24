@@ -1,8 +1,7 @@
-"""Virtual environment manager for GeoAI QGIS Plugin.
+"""Managed package runtime for the GeoAI QGIS Plugin.
 
-Manages the creation, package installation, and verification of a
-virtual environment used to isolate GeoAI's Python dependencies
-from the QGIS environment.
+Manages the package installation and verification of a private site-packages
+directory used to isolate GeoAI's Python dependencies from QGIS's environment.
 
 This script is adapted from the QGIS AI-Segmentation plugin's venv_manager.py. Created by the TerraLabAI team.
 Source: https://github.com/TerraLabAI/QGIS_AI-Segmentation/blob/main/src/core/venv_manager.py
@@ -49,6 +48,7 @@ REQUIRED_PACKAGES = [
 
 DEPS_HASH_FILE = os.path.join(VENV_DIR, "deps_hash.txt")
 CUDA_FLAG_FILE = os.path.join(VENV_DIR, "cuda_installed.txt")
+RUNTIME_READY_FILENAME = "geoai-runtime-ready.txt"
 
 # Bump when install logic changes significantly to force re-install.
 _INSTALL_LOGIC_VERSION = "13-corporate"
@@ -168,6 +168,31 @@ def _write_cuda_flag(value: str):
             f.write(content)
     except (OSError, IOError) as e:
         _log(f"Failed to write CUDA flag: {e}", Qgis.Warning)
+
+
+def _write_runtime_ready_marker(venv_dir: str = None) -> None:
+    """Mark a managed package directory as successfully verified."""
+    if venv_dir is None:
+        venv_dir = VENV_DIR
+    marker_path = os.path.join(venv_dir, RUNTIME_READY_FILENAME)
+    try:
+        os.makedirs(venv_dir, exist_ok=True)
+        with open(marker_path, "w", encoding="utf-8") as marker_file:
+            marker_file.write("approved-python-package-directory\n")
+    except OSError as exc:
+        _log(f"Failed to write runtime readiness marker: {exc}", Qgis.Warning)
+
+
+def _remove_runtime_ready_marker(venv_dir: str = None) -> None:
+    """Invalidate readiness while the managed package directory is changing."""
+    if venv_dir is None:
+        venv_dir = VENV_DIR
+    try:
+        os.remove(os.path.join(venv_dir, RUNTIME_READY_FILENAME))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        _log(f"Failed to clear runtime readiness marker: {exc}", Qgis.Warning)
 
 
 def _read_cuda_flag() -> Optional[str]:
@@ -719,6 +744,32 @@ def _truncate_error(output: str, limit: int = _ERROR_DETAIL_LIMIT) -> str:
     return text[:head].rstrip() + marker + text[-tail:].lstrip()
 
 
+def _is_windows_policy_block(error) -> bool:
+    """Return whether an error indicates Windows policy blocked execution."""
+    if sys.platform != "win32":
+        return False
+    if getattr(error, "winerror", None) == 1260:
+        return True
+    error_text = str(error).lower()
+    return "winerror 1260" in error_text or (
+        "1260" in error_text and "blocked by group policy" in error_text
+    )
+
+
+def _get_windows_policy_error_message(error, venv_dir: str) -> Optional[str]:
+    """Build actionable guidance for a Windows executable policy block."""
+    if not _is_windows_policy_block(error):
+        return None
+    runtime_dir = os.path.abspath(os.path.expanduser(venv_dir))
+    return (
+        "Approved Python could not be started because Windows group policy "
+        f"blocked execution. Ask IT to provision or allow the approved Python "
+        f"executable and use a writable runtime directory at {runtime_dir}; "
+        "then set GEOAI_RUNTIME_DIR and restart QGIS. GEOAI_PYTHON must match "
+        "QGIS's Python version."
+    )
+
+
 def _get_pip_ssl_flags() -> List[str]:
     """Get explicitly configured pip host trust flags.
 
@@ -962,7 +1013,7 @@ def _get_clean_env_for_venv() -> dict:
 def _get_subprocess_kwargs() -> dict:
     """Get platform-specific subprocess kwargs.
 
-    Includes a safe ``cwd`` so that the venv Python never finds the QGIS
+    Includes a safe ``cwd`` so that approved Python never finds the QGIS
     plugin package (also named ``geoai``) via the current working directory.
 
     Returns:
@@ -980,7 +1031,7 @@ def _get_subprocess_kwargs() -> dict:
 
 
 def _get_windows_dll_setup_code() -> str:
-    """Return Python code that registers venv DLL directories on Windows.
+    """Return Python code that registers managed DLL directories on Windows.
 
     Returns:
         A Python source string that is safe to prepend to isolated subprocess
@@ -991,15 +1042,19 @@ def _get_windows_dll_setup_code() -> str:
         import sys as _geoai_sys
 
         if _geoai_sys.platform == "win32":
-            try:
-                import sysconfig as _geoai_sysconfig
+            _geoai_site_packages = _geoai_os.environ.get(
+                "GEOAI_RUNTIME_SITE_PACKAGES"
+            )
+            if not _geoai_site_packages:
+                try:
+                    import sysconfig as _geoai_sysconfig
 
-                _geoai_site_packages = (
-                    _geoai_sysconfig.get_paths().get("platlib")
-                    or _geoai_sysconfig.get_paths().get("purelib")
-                )
-            except Exception:
-                _geoai_site_packages = None
+                    _geoai_site_packages = (
+                        _geoai_sysconfig.get_paths().get("platlib")
+                        or _geoai_sysconfig.get_paths().get("purelib")
+                    )
+                except Exception:
+                    _geoai_site_packages = None
 
             if _geoai_site_packages:
                 _geoai_dll_dirs = [
@@ -1087,19 +1142,19 @@ def _get_pip_proxy_args() -> List[str]:
 
 
 def get_venv_dir() -> str:
-    """Get the venv directory path.
+    """Get the managed runtime directory path.
 
     Returns:
-        Path to the virtual environment directory.
+        Path to the managed runtime directory.
     """
     return VENV_DIR
 
 
 def get_venv_site_packages(venv_dir: str = None) -> str:
-    """Get the site-packages directory within the venv.
+    """Get the managed site-packages directory.
 
     Args:
-        venv_dir: Optional venv directory path. Uses VENV_DIR if None.
+        venv_dir: Optional runtime directory path. Uses VENV_DIR if None.
 
     Returns:
         Path to the site-packages directory.
@@ -1107,87 +1162,91 @@ def get_venv_site_packages(venv_dir: str = None) -> str:
     if venv_dir is None:
         venv_dir = VENV_DIR
 
-    if sys.platform == "win32":
-        return os.path.join(venv_dir, "Lib", "site-packages")
-    else:
-        lib_dir = os.path.join(venv_dir, "lib")
-        if os.path.exists(lib_dir):
-            for entry in os.listdir(lib_dir):
-                if entry.startswith("python") and os.path.isdir(
-                    os.path.join(lib_dir, entry)
-                ):
-                    site_packages = os.path.join(lib_dir, entry, "site-packages")
-                    if os.path.exists(site_packages):
-                        return site_packages
-
-        py_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
-        return os.path.join(venv_dir, "lib", py_version, "site-packages")
+    return os.path.join(venv_dir, "site-packages")
 
 
 def get_venv_python_path(venv_dir: str = None) -> str:
-    """Get the Python executable path within the venv.
+    """Get the approved Python executable used by the managed runtime.
 
     Args:
         venv_dir: Optional venv directory path. Uses VENV_DIR if None.
 
     Returns:
-        Path to the venv Python executable.
+        Path to the approved Python executable.
     """
-    if venv_dir is None:
-        venv_dir = VENV_DIR
-
-    if sys.platform == "win32":
-        return os.path.join(venv_dir, "Scripts", "python.exe")
-    else:
-        return os.path.join(venv_dir, "bin", "python3")
+    return _get_system_python()
 
 
 def get_venv_pip_path(venv_dir: str = None) -> str:
-    """Get the pip executable path within the venv.
+    """Get the approved Python used to invoke pip.
 
     Args:
         venv_dir: Optional venv directory path. Uses VENV_DIR if None.
 
     Returns:
-        Path to the venv pip executable.
+        Path to the approved Python executable.
     """
-    if venv_dir is None:
-        venv_dir = VENV_DIR
-
-    if sys.platform == "win32":
-        return os.path.join(venv_dir, "Scripts", "pip.exe")
-    else:
-        return os.path.join(venv_dir, "bin", "pip")
+    return get_venv_python_path(venv_dir)
 
 
 def venv_exists(venv_dir: str = None) -> bool:
-    """Check if the venv exists and has a Python executable.
+    """Check if the managed package directory exists.
 
     Args:
         venv_dir: Optional venv directory path. Uses VENV_DIR if None.
 
     Returns:
-        True if the venv Python executable exists.
+        True if the managed package directory exists.
     """
     if venv_dir is None:
         venv_dir = VENV_DIR
-    python_path = get_venv_python_path(venv_dir)
-    return os.path.exists(python_path)
+    return os.path.isdir(get_venv_site_packages(venv_dir))
+
+
+def runtime_is_ready(venv_dir: str = None) -> bool:
+    """Return whether the managed package directory passed verification."""
+    if venv_dir is None:
+        venv_dir = VENV_DIR
+    return venv_exists(venv_dir) and os.path.isfile(
+        os.path.join(venv_dir, RUNTIME_READY_FILENAME)
+    )
+
+
+def _get_runtime_env(venv_dir: str = None) -> dict:
+    """Build a clean subprocess environment with managed packages first."""
+    if venv_dir is None:
+        venv_dir = VENV_DIR
+    site_packages = os.path.abspath(get_venv_site_packages(venv_dir))
+    env = _get_clean_env_for_venv()
+    env["PYTHONPATH"] = site_packages
+    env["GEOAI_RUNTIME_SITE_PACKAGES"] = site_packages
+    if sys.platform == "win32":
+        runtime_dll_dirs = [
+            os.path.join(site_packages, "torch", "lib"),
+            os.path.join(site_packages, "torch", "bin"),
+            os.path.join(site_packages, "torchvision"),
+        ]
+        path_parts = [
+            path for path in env.get("PATH", "").split(os.pathsep) if path
+        ]
+        for runtime_dll_dir in reversed(runtime_dll_dirs):
+            if os.path.isdir(runtime_dll_dir) and runtime_dll_dir not in path_parts:
+                path_parts.insert(0, runtime_dll_dir)
+        env["PATH"] = os.pathsep.join(path_parts)
+    return env
 
 
 def venv_python_works(venv_dir: str = None) -> bool:
-    """Check that the venv interpreter exists *and* actually runs.
+    """Check that the approved Python can run with managed packages.
 
-    ``venv_exists`` only stats the executable, so a venv left half-created by
-    an interrupted install (or with its interpreter quarantined by antivirus)
-    looks healthy and is reused forever. uv then fails with "Failed to inspect
-    Python interpreter", which no reinstall can clear. See issue #850.
+    The managed runtime intentionally contains no generated interpreter. This
+    check validates the approved host Python instead.
 
     Args:
-        venv_dir: Optional venv directory path. Uses VENV_DIR if None.
+        venv_dir: Optional managed runtime directory. Uses VENV_DIR if None.
 
     Returns:
-        True if the interpreter runs successfully.
+        True if the approved Python runs successfully.
     """
     if not venv_exists(venv_dir):
         return False
@@ -1199,25 +1258,22 @@ def venv_python_works(venv_dir: str = None) -> bool:
             capture_output=True,
             text=True,
             timeout=60,
-            env=_get_clean_env_for_venv(),
+            env=_get_runtime_env(venv_dir),
             **_get_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
-        # A slow first launch (antivirus scanning a fresh interpreter) is not
-        # proof of breakage, and the caller reacts by deleting the venv. Keep
-        # it: a real fault resurfaces as an install error with full output.
         _log(
-            "Venv interpreter check timed out; assuming it is usable",
+            "Approved Python check timed out; assuming it is usable",
             Qgis.Warning,
         )
         return True
     except (OSError, subprocess.SubprocessError) as e:
-        _log("Venv interpreter is not runnable: {}".format(e), Qgis.Warning)
+        _log("Approved Python is not runnable: {}".format(e), Qgis.Warning)
         return False
 
     if result.returncode != 0:
         _log(
-            "Venv interpreter exited with code {}: {}".format(
+            "Approved Python exited with code {}: {}".format(
                 result.returncode,
                 _truncate_error(result.stderr or result.stdout or ""),
             ),
@@ -1228,23 +1284,23 @@ def venv_python_works(venv_dir: str = None) -> bool:
 
 
 def ensure_venv_packages_available() -> bool:
-    """Add the venv site-packages to sys.path so packages can be imported.
+    """Add the managed site-packages to sys.path so packages can be imported.
 
     Returns:
         True if packages were made available, False otherwise.
     """
     if not venv_exists():
-        _log("Venv does not exist, cannot load packages", Qgis.Warning)
+        _log("Managed package directory does not exist, cannot load packages", Qgis.Warning)
         return False
 
     site_packages = get_venv_site_packages()
     if not os.path.exists(site_packages):
-        _log(f"Venv site-packages not found: {site_packages}", Qgis.Warning)
+        _log(f"Managed site-packages not found: {site_packages}", Qgis.Warning)
         return False
 
     if site_packages not in sys.path:
         sys.path.insert(0, site_packages)
-        _log(f"Added venv site-packages to sys.path: {site_packages}", Qgis.Info)
+        _log(f"Added managed site-packages to sys.path: {site_packages}", Qgis.Info)
 
     # Fix PROJ database for the venv's pyproj / rasterio / pyogrio.
     # QGIS may set PROJ_LIB to its own PROJ data, but the venv's pyproj
@@ -1289,12 +1345,12 @@ def _add_windows_dll_directories(site_packages: str) -> None:
 
     Torch and other native packages ship DLLs in subdirectories (e.g.
     ``torch/lib/``) that the OS loader doesn't search by default when loading
-    from a foreign venv inside QGIS's process.  We add them via
+    from the managed package directory inside QGIS's process.  We add them via
     ``os.add_dll_directory()`` and also prepend to ``PATH`` to cover legacy
     ``LoadLibrary`` calls without search flags.
 
     Args:
-        site_packages: Path to the venv site-packages directory.
+        site_packages: Path to the managed site-packages directory.
     """
     dll_dirs = [
         os.path.join(site_packages, "torch", "lib"),
@@ -1317,14 +1373,14 @@ def _add_windows_dll_directories(site_packages: str) -> None:
 
 
 def _repair_corrupted_geoai_init(site_packages: str) -> None:
-    """Detect and repair a corrupted geoai/__init__.py in the venv.
+    """Detect and repair a corrupted geoai/__init__.py in managed packages.
 
     A previous version of the patching logic could produce invalid Python
     (empty ``try:`` blocks).  If the file fails to compile, reinstall
     geoai-py to get a clean copy.
 
     Args:
-        site_packages: Path to venv site-packages directory.
+        site_packages: Path to managed site-packages directory.
     """
     init_path = os.path.join(site_packages, "geoai", "__init__.py")
     if not os.path.exists(init_path):
@@ -1344,8 +1400,9 @@ def _repair_corrupted_geoai_init(site_packages: str) -> None:
         )
 
     # Reinstall geoai-py to get a clean copy using approved pip only.
-    python_path = get_venv_python_path()
-    env = _get_clean_env_for_venv()
+    runtime_dir = os.path.dirname(site_packages)
+    python_path = get_venv_python_path(runtime_dir)
+    env = _get_runtime_env(runtime_dir)
     subprocess_kwargs = _get_subprocess_kwargs()
 
     try:
@@ -1361,7 +1418,7 @@ def _repair_corrupted_geoai_init(site_packages: str) -> None:
             "geoai-py==0.42.0",
         ]
         result = subprocess.run(
-            cmd,
+            _add_runtime_target(cmd, env),
             capture_output=True,
             text=True,
             timeout=120,
@@ -1381,7 +1438,7 @@ def _repair_corrupted_geoai_init(site_packages: str) -> None:
 
 
 def patch_geoai_init_for_torch_guard(site_packages: str = None) -> bool:
-    """Patch the venv's geoai package for Windows DLL load failures.
+    """Patch the managed geoai package for Windows DLL load failures.
 
     On Windows, torch DLLs may fail to load inside QGIS's Python process
     (WinError 127), raising ``OSError`` instead of ``ImportError``.
@@ -1403,7 +1460,7 @@ def patch_geoai_init_for_torch_guard(site_packages: str = None) -> bool:
     This is idempotent — already-patched files are left unchanged.
 
     Args:
-        site_packages: Path to venv site-packages. Uses default if None.
+        site_packages: Path to managed site-packages. Uses default if None.
 
     Returns:
         True if patched (or already patched), False on failure.
@@ -1582,7 +1639,7 @@ def _wrap_bare_imports(filepath: str) -> bool:
 
 
 def _fix_proj_data(site_packages: str) -> None:
-    """Configure PROJ and GDAL data paths for the venv's geospatial libraries.
+    """Configure PROJ and GDAL data paths for managed geospatial libraries.
 
     Configures pyproj via its Python API (``pyproj.datadir.set_data_dir()``)
     instead of setting ``PROJ_DATA``/``PROJ_LIB`` environment variables.
@@ -1591,7 +1648,7 @@ def _fix_proj_data(site_packages: str) -> None:
     "Could not correctly detect PROJ data files" otherwise.
 
     Args:
-        site_packages: Path to the venv's site-packages directory.
+        site_packages: Path to the managed site-packages directory.
     """
     # --- PROJ database ---
     proj_candidates = [
@@ -1627,7 +1684,7 @@ def _fix_proj_data(site_packages: str) -> None:
                 Qgis.Info,
             )
     else:
-        _log("No venv proj.db found; PROJ_DATA unchanged", Qgis.Warning)
+        _log("No managed proj.db found; PROJ_DATA unchanged", Qgis.Warning)
 
     # --- GDAL data ---
     gdal_candidates = [
@@ -1727,10 +1784,9 @@ def _get_qgis_python() -> Optional[str]:
 
 
 def _get_linux_system_python() -> Optional[str]:
-    """Get a suitable system Python on Linux for creating venvs.
+    """Get a suitable approved system Python on Linux.
 
-    Searches for python3 on PATH, verifies version >= 3.9 and
-    that the venv module is available.
+    Searches for python3 on PATH and verifies version >= 3.9.
 
     Returns:
         Path to a suitable Python executable, or None if not found.
@@ -1761,7 +1817,7 @@ def _get_linux_system_python() -> Optional[str]:
                     candidate,
                     "-c",
                     (
-                        "import sys, venv; "
+                        "import sys; "
                         "print(sys.version_info.major, "
                         "sys.version_info.minor, "
                         "sys.version_info.micro)"
@@ -1775,21 +1831,12 @@ def _get_linux_system_python() -> Optional[str]:
             )
             if result.returncode != 0:
                 stderr = result.stderr.strip()
-                if "No module named" in stderr and "venv" in stderr:
-                    _log(
-                        "System Python {} lacks the venv module. "
-                        "Install it with: sudo apt install python3-venv".format(
-                            candidate
-                        ),
-                        Qgis.Warning,
-                    )
-                else:
-                    _log(
-                        "System Python {} failed verification: {}".format(
-                            candidate, stderr
-                        ),
-                        Qgis.Warning,
-                    )
+                _log(
+                    "System Python {} failed verification: {}".format(
+                        candidate, stderr
+                    ),
+                    Qgis.Warning,
+                )
                 continue
 
             parts = result.stdout.strip().split()
@@ -1868,7 +1915,7 @@ def _get_configured_python() -> Optional[str]:
 
 
 def _get_system_python() -> str:
-    """Get the path to the Python executable for creating venvs.
+    """Get the path to the approved Python executable.
 
     The corporate build prefers an IT-approved ``GEOAI_PYTHON`` executable
     and never downloads an interpreter.
@@ -1929,10 +1976,10 @@ def create_venv(
     venv_dir: str = None,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> Tuple[bool, str]:
-    """Create a virtual environment.
+    """Prepare the managed package directory.
 
     Args:
-        venv_dir: Optional directory for the venv. Uses VENV_DIR if None.
+        venv_dir: Optional directory for managed packages. Uses VENV_DIR if None.
         progress_callback: Optional function called with (percent, message).
 
     Returns:
@@ -1941,113 +1988,42 @@ def create_venv(
     if venv_dir is None:
         venv_dir = VENV_DIR
 
-    _log(f"Creating virtual environment at: {venv_dir}", Qgis.Info)
+    _log(f"Preparing managed package directory at: {venv_dir}", Qgis.Info)
 
     if progress_callback:
-        progress_callback(10, "Creating virtual environment...")
+        progress_callback(10, "Preparing private package directory...")
 
-    system_python = None
-    python_lookup_error = ""
     try:
         system_python = _get_system_python()
     except RuntimeError as exc:
-        python_lookup_error = str(exc)
-    if python_lookup_error and system_python is None:
-        _log(
-            f"Approved Python lookup failed: {python_lookup_error}",
-            Qgis.Warning,
-        )
-    if system_python:
-        _log(f"Using Python: {system_python}", Qgis.Info)
+        policy_message = _get_windows_policy_error_message(exc, venv_dir)
+        if policy_message:
+            _log(policy_message, Qgis.Critical)
+            return False, policy_message
+        _log(f"Approved Python lookup failed: {exc}", Qgis.Warning)
+        return False, str(exc)
 
-    use_uv = False
-    if system_python is None:
-        return False, python_lookup_error
-    cmd = [system_python, "-m", "venv", venv_dir]
-    _log("Creating venv with python -m venv", Qgis.Info)
+    _log(f"Using approved Python: {system_python}", Qgis.Info)
 
     try:
-        env = _get_clean_env_for_venv()
-        subprocess_kwargs = _get_subprocess_kwargs()
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-            **subprocess_kwargs,
-        )
-
-        if result.returncode == 0:
-            _log("Virtual environment created successfully", Qgis.Success)
-
-            # When using uv, pip is not needed in the venv (uv handles
-            # installs directly).  Only bootstrap pip for stdlib venvs.
-            if not use_uv:
-                pip_path = get_venv_pip_path(venv_dir)
-                if not os.path.exists(pip_path):
-                    _log(
-                        "pip not found in venv, bootstrapping with ensurepip...",
-                        Qgis.Info,
-                    )
-                    python_in_venv = get_venv_python_path(venv_dir)
-                    ensurepip_cmd = [
-                        python_in_venv,
-                        "-m",
-                        "ensurepip",
-                        "--upgrade",
-                    ]
-                    try:
-                        ensurepip_result = subprocess.run(
-                            ensurepip_cmd,
-                            capture_output=True,
-                            text=True,
-                            timeout=120,
-                            env=env,
-                            **subprocess_kwargs,
-                        )
-                        if ensurepip_result.returncode == 0:
-                            _log("pip bootstrapped via ensurepip", Qgis.Success)
-                        else:
-                            err = ensurepip_result.stderr or ensurepip_result.stdout
-                            _log(f"ensurepip failed: {err[:200]}", Qgis.Warning)
-                            _cleanup_partial_venv(venv_dir)
-                            return (
-                                False,
-                                f"Failed to bootstrap pip: {err[:200]}",
-                            )
-                    except Exception as e:
-                        _log(f"ensurepip exception: {e}", Qgis.Warning)
-                        _cleanup_partial_venv(venv_dir)
-                        return (
-                            False,
-                            f"Failed to bootstrap pip: {str(e)[:200]}",
-                        )
-
-            if progress_callback:
-                progress_callback(15, "Virtual environment created")
-            return True, "Virtual environment created"
-        else:
-            error_msg = (
-                result.stderr or result.stdout or f"Return code {result.returncode}"
-            )
-            _log(f"Failed to create venv: {error_msg}", Qgis.Critical)
+        legacy_cfg = os.path.join(venv_dir, "pyvenv.cfg")
+        if os.path.isfile(legacy_cfg):
             _cleanup_partial_venv(venv_dir)
-            return False, f"Failed to create venv: {_truncate_error(error_msg)}"
-
-    except subprocess.TimeoutExpired:
-        _log("Virtual environment creation timed out", Qgis.Critical)
-        _cleanup_partial_venv(venv_dir)
-        return False, "Virtual environment creation timed out"
-    except FileNotFoundError:
-        missing_executable = cmd[0] if cmd else system_python
-        _log(f"Venv creation executable not found: {missing_executable}", Qgis.Critical)
-        return False, f"Executable not found: {missing_executable}"
+        site_packages = get_venv_site_packages(venv_dir)
+        os.makedirs(site_packages, exist_ok=True)
+        _log(f"Managed package directory ready: {site_packages}", Qgis.Success)
+        if progress_callback:
+            progress_callback(15, "Private package directory ready")
+        return True, "Private package directory ready"
     except Exception as e:
-        _log(f"Exception during venv creation: {str(e)}", Qgis.Critical)
+        policy_message = _get_windows_policy_error_message(e, venv_dir)
+        if policy_message:
+            _log(policy_message, Qgis.Critical)
+            _cleanup_partial_venv(venv_dir)
+            return False, policy_message
+        _log(f"Exception preparing package directory: {str(e)}", Qgis.Critical)
         _cleanup_partial_venv(venv_dir)
-        return False, f"Error: {str(e)[:200]}"
+        return False, f"Error preparing package directory: {str(e)[:200]}"
 
 
 # ---------------------------------------------------------------------------
@@ -2094,6 +2070,15 @@ def _parse_pip_download_line(line: str) -> Optional[str]:
             size = "{:.1f} GB".format(num / 1000)
 
     return "Downloading {} ({})".format(pkg_name, size)
+
+
+def _add_runtime_target(cmd: List[str], env: dict) -> List[str]:
+    """Add the managed package directory to a pip install command."""
+    target = env.get("GEOAI_RUNTIME_SITE_PACKAGES")
+    if not target or "install" not in cmd or "--target" in cmd:
+        return cmd
+    install_index = cmd.index("install")
+    return cmd[: install_index + 1] + ["--target", target] + cmd[install_index + 1 :]
 
 
 def _run_pip_install(
@@ -2145,6 +2130,7 @@ def _run_pip_install(
 
     process = None
     try:
+        cmd = _add_runtime_target(cmd, env)
         process = subprocess.Popen(
             cmd,
             stdout=stdout_file,
@@ -2344,7 +2330,7 @@ def _is_cpu_torch_installed(
     """Check if installed torch has no CUDA support (CPU-only build).
 
     Args:
-        python_path: Path to the venv Python.
+        python_path: Path to the approved Python.
         env: Environment dict for subprocess.
         subprocess_kwargs: Platform-specific subprocess kwargs.
 
@@ -2367,6 +2353,23 @@ def _is_cpu_torch_installed(
     return False
 
 
+def _clear_runtime_packages(site_packages: str, prefixes: tuple[str, ...]) -> None:
+    """Remove selected distributions from the managed package directory."""
+    if not os.path.isdir(site_packages):
+        return
+    for name in os.listdir(site_packages):
+        if not name.casefold().startswith(prefixes):
+            continue
+        path = os.path.join(site_packages, name)
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.remove(path)
+        except OSError as exc:
+            _log(f"Could not remove runtime package path {path}: {exc}", Qgis.Warning)
+
+
 def _reinstall_cpu_torch(
     venv_dir: str,
     progress_callback: Optional[Callable[[int, str], None]] = None,
@@ -2374,11 +2377,11 @@ def _reinstall_cpu_torch(
     """Reinstall CPU-only torch/torchvision after CUDA failure.
 
     Args:
-        venv_dir: Path to the virtual environment.
+        venv_dir: Path to the managed runtime directory.
         progress_callback: Optional progress callback.
     """
     python_path = get_venv_python_path(venv_dir)
-    env = _get_clean_env_for_venv()
+    env = _get_runtime_env(venv_dir)
     subprocess_kwargs = _get_subprocess_kwargs()
     _use_uv = False
     _uv_path = None
@@ -2387,37 +2390,10 @@ def _reinstall_cpu_torch(
     if progress_callback:
         progress_callback(96, "CUDA failed, reinstalling CPU torch...")
 
-    try:
-        if _use_uv:
-            uninstall_cmd = [
-                _uv_path,
-                "pip",
-                "uninstall",
-                "--python",
-                python_path,
-                "torch",
-                "torchvision",
-            ]
-        else:
-            uninstall_cmd = [
-                python_path,
-                "-m",
-                "pip",
-                "uninstall",
-                "-y",
-                "torch",
-                "torchvision",
-            ]
-        subprocess.run(
-            uninstall_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-            **subprocess_kwargs,
-        )
-    except Exception as e:
-        _log(f"torch uninstall error (continuing): {e}", Qgis.Warning)
+    _clear_runtime_packages(
+        get_venv_site_packages(venv_dir),
+        ("torch", "torchvision", "torchgen", "functorch", "nvidia", "triton"),
+    )
 
     for pkg in ("torch==2.7.1", "torchvision==0.22.1"):
         try:
@@ -2449,7 +2425,7 @@ def _reinstall_cpu_torch(
                     + [pkg]
                 )
             result = subprocess.run(
-                cmd,
+                _add_runtime_target(cmd, env),
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -2467,7 +2443,9 @@ def _reinstall_cpu_torch(
                         Qgis.Warning,
                     )
                     retry_result = subprocess.run(
-                        cmd + _get_uv_insecure_host_flags(),
+                        _add_runtime_target(
+                            cmd + _get_uv_insecure_host_flags(), env
+                        ),
                         capture_output=True,
                         text=True,
                         timeout=600,
@@ -2492,10 +2470,10 @@ def _get_installed_distribution_version(
     env: dict,
     subprocess_kwargs: dict,
 ) -> Optional[str]:
-    """Read an installed distribution version from the managed venv.
+    """Read an installed distribution version from managed packages.
 
     Args:
-        python_path: Path to the venv Python.
+        python_path: Path to the approved Python.
         dist_name: Distribution name to query.
         env: Environment dict for subprocess.
         subprocess_kwargs: Platform-specific subprocess kwargs.
@@ -2545,7 +2523,7 @@ def _get_installed_torch_constraints(
     """Build constraints that preserve installed PyTorch wheel variants.
 
     Args:
-        python_path: Path to the venv Python.
+        python_path: Path to the approved Python.
         env: Environment dict for subprocess.
         subprocess_kwargs: Platform-specific subprocess kwargs.
 
@@ -2659,16 +2637,16 @@ def _remove_temp_file(path: Optional[str]) -> None:
 
 
 def _verify_cuda_in_venv(venv_dir: str) -> bool:
-    """Run a CUDA smoke test inside the venv.
+    """Run a CUDA smoke test with the managed package directory.
 
     Args:
-        venv_dir: Path to the virtual environment.
+        venv_dir: Path to the managed runtime directory.
 
     Returns:
         True if CUDA is functional.
     """
     python_path = get_venv_python_path(venv_dir)
-    env = _get_clean_env_for_venv()
+    env = _get_runtime_env(venv_dir)
     subprocess_kwargs = _get_subprocess_kwargs()
 
     cuda_test_code = (
@@ -2798,10 +2776,10 @@ def install_dependencies(
     cancel_check: Optional[Callable[[], bool]] = None,
     cuda_enabled: bool = False,
 ) -> Tuple[bool, str]:
-    """Install all required packages into the virtual environment.
+    """Install all required packages into managed site-packages.
 
     Args:
-        venv_dir: Optional venv directory path. Uses VENV_DIR if None.
+        venv_dir: Optional runtime directory path. Uses VENV_DIR if None.
         progress_callback: Optional function called with (percent, message).
         cancel_check: Optional function returning True to cancel.
         cuda_enabled: Whether to install CUDA-enabled PyTorch.
@@ -2813,15 +2791,22 @@ def install_dependencies(
         venv_dir = VENV_DIR
 
     if not venv_exists(venv_dir):
-        return False, "Virtual environment does not exist"
+        return False, "Managed package directory does not exist"
+
+    _remove_runtime_ready_marker(venv_dir)
 
     use_uv = False
     uv_path = None
+    python_path = get_venv_python_path(venv_dir)
     if use_uv:
         _log(f"Installing dependencies using uv: {uv_path}", Qgis.Info)
     else:
-        pip_path = get_venv_pip_path(venv_dir)
-        _log(f"Installing dependencies using pip: {pip_path}", Qgis.Info)
+        _log(
+            "Installing dependencies with approved Python -m pip into {}".format(
+                get_venv_site_packages(venv_dir)
+            ),
+            Qgis.Info,
+        )
     if cuda_enabled:
         _log("CUDA mode enabled - will install GPU-accelerated PyTorch", Qgis.Info)
 
@@ -2831,8 +2816,7 @@ def install_dependencies(
     required_packages = _get_required_packages()
     base_progress = 20
     progress_range = 80
-    python_path = get_venv_python_path(venv_dir)
-    env = _get_clean_env_for_venv()
+    env = _get_runtime_env(venv_dir)
     subprocess_kwargs = _get_subprocess_kwargs()
 
     # -- Partition packages into CUDA (individual) and batch groups -----------
@@ -2855,7 +2839,7 @@ def install_dependencies(
     _force_cuda_reinstall = False
     _cuda_index_for_batch = None
     if cuda_packages:
-        _precheck_env = _get_clean_env_for_venv()
+        _precheck_env = _get_runtime_env(venv_dir)
         _precheck_kwargs = _get_subprocess_kwargs()
         if _is_cpu_torch_installed(python_path, _precheck_env, _precheck_kwargs):
             _force_cuda_reinstall = True
@@ -2939,44 +2923,16 @@ def install_dependencies(
                     Qgis.Info,
                 )
 
-            # Uninstall CPU torch before CUDA install
+            # Remove CPU torch from the managed directory before CUDA install.
             if _force_cuda_reinstall and is_cuda_package:
                 _log(
-                    "Uninstalling CPU {} before CUDA install".format(package_name),
+                    "Removing CPU {} before CUDA install".format(package_name),
                     Qgis.Info,
                 )
-                try:
-                    if use_uv:
-                        uninstall_cmd = [
-                            uv_path,
-                            "pip",
-                            "uninstall",
-                            "--python",
-                            python_path,
-                            package_name,
-                        ]
-                    else:
-                        uninstall_cmd = [
-                            python_path,
-                            "-m",
-                            "pip",
-                            "uninstall",
-                            "-y",
-                            package_name,
-                        ]
-                    subprocess.run(
-                        uninstall_cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        env=env,
-                        **subprocess_kwargs,
-                    )
-                except Exception as exc:
-                    _log(
-                        f"Failed to uninstall CPU {package_name}: {exc}",
-                        Qgis.Warning,
-                    )
+                _clear_runtime_packages(
+                    get_venv_site_packages(venv_dir),
+                    (package_name, f"{package_name}-"),
+                )
 
             if use_uv:
                 base_cmd = [uv_path] + pip_args
@@ -3594,7 +3550,7 @@ def install_dependencies(
 
     _log("=" * 50, Qgis.Success)
     _log("All dependencies installed successfully!", Qgis.Success)
-    _log(f"Virtual environment: {venv_dir}", Qgis.Success)
+    _log(f"Managed package runtime: {venv_dir}", Qgis.Success)
     _log("=" * 50, Qgis.Success)
 
     if _driver_too_old:
@@ -3678,10 +3634,10 @@ def verify_venv(
     venv_dir: str = None,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> Tuple[bool, str]:
-    """Verify all required packages are importable in the venv.
+    """Verify all required packages are importable from managed packages.
 
     Args:
-        venv_dir: Optional venv directory path. Uses VENV_DIR if None.
+        venv_dir: Optional runtime directory path. Uses VENV_DIR if None.
         progress_callback: Optional function called with (percent, message).
 
     Returns:
@@ -3691,10 +3647,10 @@ def verify_venv(
         venv_dir = VENV_DIR
 
     if not venv_exists(venv_dir):
-        return False, "Virtual environment not found"
+        return False, "Managed package directory not found"
 
     python_path = get_venv_python_path(venv_dir)
-    env = _get_clean_env_for_venv()
+    env = _get_runtime_env(venv_dir)
     subprocess_kwargs = _get_subprocess_kwargs()
 
     required_packages = _get_required_packages()
@@ -3807,20 +3763,20 @@ def verify_venv(
     if optional_failures:
         unique_optional = sorted(set(optional_failures))
         _log(
-            "Virtual environment verified with optional package failures: {}".format(
+            "Managed runtime verified with optional package failures: {}".format(
                 ", ".join(unique_optional)
             ),
             Qgis.Warning,
         )
         return (
             True,
-            "Virtual environment ready (optional packages unavailable: {})".format(
+            "Managed runtime ready (optional packages unavailable: {})".format(
                 ", ".join(unique_optional)
             ),
         )
 
-    _log("Virtual environment verified successfully", Qgis.Success)
-    return True, "Virtual environment ready"
+    _log("Managed runtime verified successfully", Qgis.Success)
+    return True, "Managed runtime ready"
 
 
 # ---------------------------------------------------------------------------
@@ -4096,8 +4052,12 @@ def get_venv_status() -> Tuple[bool, str]:
         Tuple of (is_ready, message).
     """
     if not venv_exists():
-        _log(f"get_venv_status: venv not found at {VENV_DIR}", Qgis.Info)
-        return False, "Virtual environment not configured"
+        _log(f"get_venv_status: package directory not found at {VENV_DIR}", Qgis.Info)
+        return False, "Managed runtime not configured"
+
+    if not runtime_is_ready():
+        _log("get_venv_status: readiness marker not found", Qgis.Info)
+        return False, "Managed runtime has not been verified"
 
     is_present, msg = _quick_check_packages()
     if is_present:
@@ -4121,14 +4081,14 @@ def get_venv_status() -> Tuple[bool, str]:
         return True, "Ready (Python {})".format(python_version)
     else:
         _log(f"get_venv_status: quick check failed: {msg}", Qgis.Warning)
-        return False, "Virtual environment incomplete: {}".format(msg)
+        return False, "Managed runtime incomplete: {}".format(msg)
 
 
 def remove_venv(venv_dir: str = None) -> Tuple[bool, str]:
-    """Remove the virtual environment.
+    """Remove the managed package runtime.
 
     Args:
-        venv_dir: Optional venv directory path. Uses VENV_DIR if None.
+        venv_dir: Optional runtime directory path. Uses VENV_DIR if None.
 
     Returns:
         Tuple of (success, message).
@@ -4137,15 +4097,15 @@ def remove_venv(venv_dir: str = None) -> Tuple[bool, str]:
         venv_dir = VENV_DIR
 
     if not os.path.exists(venv_dir):
-        return True, "Virtual environment does not exist"
+        return True, "Managed runtime does not exist"
 
     try:
         shutil.rmtree(venv_dir)
-        _log(f"Removed virtual environment: {venv_dir}", Qgis.Success)
-        return True, "Virtual environment removed"
+        _log(f"Removed managed runtime: {venv_dir}", Qgis.Success)
+        return True, "Managed runtime removed"
     except Exception as e:
-        _log(f"Failed to remove venv: {e}", Qgis.Warning)
-        return False, f"Failed to remove venv: {str(e)[:200]}"
+        _log(f"Failed to remove managed runtime: {e}", Qgis.Warning)
+        return False, f"Failed to remove managed runtime: {str(e)[:200]}"
 
 
 # ---------------------------------------------------------------------------
@@ -4162,7 +4122,7 @@ def create_venv_and_install(
 
     Progress breakdown:
     - 0-13%: Validate approved Python and package source
-    - 13-18%: Create virtual environment with ``python -m venv``
+    - 13-18%: Prepare the private site-packages directory
     - 18-95%: Install packages
     - 95-100%: Verify installation
 
@@ -4202,8 +4162,8 @@ def create_venv_and_install(
         _log(f"Removed {len(removed_venvs)} old venv directories", Qgis.Info)
 
     # Corporate baseline: never fetch or execute a Python/uv bootstrap binary.
-    # A pre-provisioned runtime is accepted as-is; otherwise QGIS's matching
-    # Python or GEOAI_PYTHON creates it with the standard library venv module.
+    # A pre-provisioned package directory is accepted as-is; otherwise the
+    # approved matching Python prepares its private site-packages directory.
     wheelhouse = os.environ.get("GEOAI_WHEELHOUSE", "").strip()
     if wheelhouse and not os.path.isdir(os.path.expanduser(wheelhouse)):
         return False, f"GEOAI_WHEELHOUSE does not exist: {wheelhouse}"
@@ -4217,23 +4177,23 @@ def create_venv_and_install(
         source = "offline wheelhouse" if wheelhouse else "approved pip source"
         progress_callback(13, f"Using {source}; no bootstrap executables downloaded")
 
-    # Step 2: Create venv (13-18%)
+    # Step 2: Prepare managed packages (13-18%)
     reusable_venv = False
     if venv_exists():
         if progress_callback:
-            progress_callback(15, "Checking virtual environment...")
+            progress_callback(15, "Checking managed runtime...")
         reusable_venv = venv_python_works()
         if reusable_venv:
-            _log("Virtual environment already exists", Qgis.Info)
+            _log("Managed package runtime already exists", Qgis.Info)
             if progress_callback:
-                progress_callback(18, "Virtual environment ready")
+                progress_callback(18, "Managed runtime ready")
         else:
             _log(
-                "Existing virtual environment is broken; recreating it",
+                "Existing managed runtime is not usable; recreating it",
                 Qgis.Warning,
             )
             if progress_callback:
-                progress_callback(15, "Repairing virtual environment...")
+                progress_callback(15, "Repairing managed runtime...")
             _cleanup_partial_venv(VENV_DIR)
 
     if not reusable_venv:
@@ -4307,6 +4267,7 @@ def create_venv_and_install(
         return False, f"Verification failed: {verify_msg}"
 
     _write_deps_hash()
+    _write_runtime_ready_marker(VENV_DIR)
 
     if cuda_enabled and not _cuda_fell_back and not _driver_too_old:
         _write_cuda_flag("cuda")
@@ -4319,9 +4280,9 @@ def create_venv_and_install(
         progress_callback(100, "All dependencies installed and verified")
 
     if _driver_too_old:
-        return True, "Virtual environment ready [DRIVER_TOO_OLD]"
+        return True, "Managed runtime ready [DRIVER_TOO_OLD]"
     if _cuda_fell_back:
-        return True, "Virtual environment ready [CUDA_FALLBACK]"
+        return True, "Managed runtime ready [CUDA_FALLBACK]"
     if _cuda_smoke_failed:
-        return True, "Virtual environment ready [CUDA_VERIFY_FAILED]"
-    return True, "Virtual environment ready"
+        return True, "Managed runtime ready [CUDA_VERIFY_FAILED]"
+    return True, "Managed runtime ready"
