@@ -7,16 +7,16 @@ def test_windows_dependency_specs_include_python_312_and_triton():
     specs = venv_manager.get_qgis_dependency_specs(platform_name="win32")
 
     assert "python==3.12.*" in specs
-    assert "triton-windows" in specs
-    assert "transformers>=4.56.2" in specs
+    assert "triton-windows==3.3.1.post19" in specs
+    assert "transformers==4.57.6" in specs
 
 
 def test_macos_sam3_is_optional_without_triton_windows():
     specs = venv_manager.get_qgis_dependency_specs(platform_name="darwin")
 
     assert "python==3.12.*" in specs
-    assert "sam3" in specs
-    assert "triton-windows" not in specs
+    assert "sam3==0.1.4" in specs
+    assert not any(spec.startswith("triton-windows") for spec in specs)
     assert venv_manager._is_optional_verify_package("sam3", "darwin") is True
     assert venv_manager._is_optional_install_package("sam3", "darwin") is True
 
@@ -71,8 +71,8 @@ def test_dependency_resolver_dry_run_uses_uv_compile(monkeypatch):
     assert "windows" in cmd
     requirements = calls[0]["input"]
     assert requirements is not None
-    assert "transformers>=4.56.2" in requirements
-    assert "triton-windows" in requirements
+    assert "transformers==4.57.6" in requirements
+    assert "triton-windows==3.3.1.post19" in requirements
 
 
 def test_dependency_resolver_adds_pytorch_index_and_strategy_for_cuda(monkeypatch):

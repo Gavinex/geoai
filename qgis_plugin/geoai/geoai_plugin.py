@@ -1122,25 +1122,26 @@ class GeoAIPlugin:
             )
 
         about_text = f"""
-<h2>GeoAI Plugin for QGIS</h2>
+<h2>GeoAI Corporate Plugin for QGIS</h2>
 <p>Version: {version}</p>
-<p>Author: Qiusheng Wu</p>
+<p>Upstream author: Qiusheng Wu; corporate adaptation maintained at Gavinex/geoai</p>
+<p>Runtime policy: approved Python and pip only; supports internal indexes and offline wheelhouses.</p>
 
 <h3>Features:</h3>
 <ul>
 <li><b>Moondream Vision-Language Model:</b> AI-powered image captioning, querying, object detection, and point localization</li>
 <li><b>Semantic Segmentation:</b> Train and run inference with deep learning models (U-Net, DeepLabV3+, FPN, etc.)</li>
 <li><b>Instance Segmentation:</b> Train and run Mask R-CNN models for instance-level object detection and segmentation</li>
-<li><b>Segment Anything:</b> Segment Anything Model (SAM, SAM2, SAM3) for geospatial data with text, point, and box prompts</li>
+<li><b>Segment Anything:</b> Public SAM 3.1 checkpoint for text, point, and box prompts without Hugging Face login</li>
 <li><b>Tree Segmentation:</b> Tree crown detection and forest analysis using pretrained DeepForest models</li>
 <li><b>Water Segmentation:</b> Water body detection from satellite/aerial imagery using OmniWaterMask</li>
 </ul>
 
 <h3>Links:</h3>
 <ul>
-<li><a href="https://opengeoai.org">Documentation</a></li>
-<li><a href="https://github.com/opengeos/geoai">GitHub Repository</a></li>
-<li><a href="https://github.com/opengeos/geoai/issues">Report Issues</a></li>
+<li><a href="https://github.com/Gavinex/geoai/blob/main/qgis_plugin/README.md">Corporate Setup</a></li>
+<li><a href="https://github.com/Gavinex/geoai">Corporate Fork</a></li>
+<li><a href="https://github.com/Gavinex/geoai/issues">Report Issues</a></li>
 </ul>
 
 <p>Licensed under MIT License</p>

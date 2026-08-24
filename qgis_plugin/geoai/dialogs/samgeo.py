@@ -104,6 +104,8 @@ class SamGeoModelLoadWorker(QThread):
         device: str,
         confidence: float,
         enable_interactive: bool,
+        model_id: str = None,
+        checkpoint_path: str = None,
     ):
         super().__init__()
         self.model_version = model_version
@@ -111,11 +113,24 @@ class SamGeoModelLoadWorker(QThread):
         self.device = device
         self.confidence = confidence
         self.enable_interactive = enable_interactive
+        self.model_id = model_id
+        self.checkpoint_path = checkpoint_path
 
     def run(self):
         """Load the SamGeo model in background."""
         try:
             self.progress.emit("Initializing SamGeo...")
+            if self.checkpoint_path and self.checkpoint_path.lower().endswith(
+                ".safetensors"
+            ):
+                from ..core.sam_models import validate_checkpoint
+
+                self.progress.emit("Verifying public SAM 3.1 checkpoint...")
+                valid, message = validate_checkpoint(
+                    self.checkpoint_path, verify_hash=True
+                )
+                if not valid:
+                    raise RuntimeError(message)
             if _use_samgeo_subprocess():
                 self.progress.emit("Starting SamGeo subprocess worker...")
                 from ..core.samgeo_subprocess import SamGeoSubprocessClient
@@ -126,6 +141,8 @@ class SamGeoModelLoadWorker(QThread):
                     device=self.device,
                     confidence=self.confidence,
                     enable_interactive=self.enable_interactive,
+                    model_id=self.model_id,
+                    checkpoint_path=self.checkpoint_path,
                 )
                 model.initialize()
                 self.finished.emit(model, getattr(model, "model_name", "SamGeo"))
@@ -141,13 +158,29 @@ class SamGeoModelLoadWorker(QThread):
                 from samgeo import SamGeo3
 
                 self.progress.emit("Loading SamGeo3 model...")
+                model_kwargs = {}
+                if self.model_id:
+                    model_kwargs["model_id"] = self.model_id
+                if self.checkpoint_path:
+                    from ..core.sam_models import enable_safetensors_checkpoint
+
+                    enable_safetensors_checkpoint(self.checkpoint_path)
+                    model_kwargs.update(
+                        checkpoint_path=self.checkpoint_path,
+                        load_from_HF=False,
+                    )
                 model = SamGeo3(
                     backend=self.backend,
                     device=self.device,
                     confidence_threshold=self.confidence,
                     enable_inst_interactivity=self.enable_interactive,
+                    **model_kwargs,
                 )
-                model_name = "SamGeo3"
+                model_name = (
+                    "SamGeo3.1 (public checkpoint)"
+                    if self.model_id == "facebook/sam3.1"
+                    else "SamGeo3"
+                )
             elif "SamGeo2" in self.model_version:
                 from samgeo import SamGeo2
 
@@ -185,6 +218,37 @@ class SamGeoOperationWorker(QThread):
         try:
             result = self._func()
             self.finished.emit(result)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class PublicModelDownloadWorker(QThread):
+    """Stream the pinned public SAM 3.1 model without authentication."""
+
+    progress = pyqtSignal(int, str)
+    downloaded = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, destination: str, parent=None):
+        super().__init__(parent)
+        self.destination = destination
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            from ..core.sam_models import download_public_model
+
+            path = download_public_model(
+                self.destination,
+                progress_callback=lambda percent, message: self.progress.emit(
+                    percent, message
+                ),
+                cancel_check=lambda: self._cancelled,
+            )
+            self.downloaded.emit(str(path))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -231,6 +295,7 @@ class SamGeoDockWidget(QDockWidget):
 
         # Model loading worker
         self.model_load_worker = None
+        self.model_download_worker = None
 
         self._setup_ui()
 
@@ -293,16 +358,19 @@ class SamGeoDockWidget(QDockWidget):
         version_row = QHBoxLayout()
         version_row.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["SamGeo3 (SAM3)"])
+        self.model_combo.addItem(
+            "SamGeo3.1 (public checkpoint, no login)", "sam31_public"
+        )
         version_row.addWidget(self.model_combo)
         backend_layout.addLayout(version_row)
 
         backend_row = QHBoxLayout()
         backend_row.addWidget(QLabel("Backend:"))
         self.backend_combo = QComboBox()
-        self.backend_combo.addItems(["meta", "transformers"])
-        if sys.platform == "darwin":
-            self.backend_combo.setCurrentText("transformers")
+        self.backend_combo.addItems(["meta"])
+        self.backend_combo.setToolTip(
+            "The public SAM 3.1 checkpoint is supported by the Meta backend."
+        )
         backend_row.addWidget(self.backend_combo)
         backend_layout.addLayout(backend_row)
 
@@ -323,6 +391,40 @@ class SamGeoDockWidget(QDockWidget):
         self.conf_spin.setSingleStep(0.05)
         conf_row.addWidget(self.conf_spin)
         backend_layout.addLayout(conf_row)
+
+        # Public checkpoint selection.  The pinned Comfy-Org checkpoint uses
+        # the SAM license but is downloadable without a Hugging Face account.
+        checkpoint_row = QHBoxLayout()
+        checkpoint_row.addWidget(QLabel("Checkpoint:"))
+        self.checkpoint_path_edit = QLineEdit()
+        from ..core.sam_models import default_sam31_checkpoint_path
+
+        self.checkpoint_path_edit.setText(str(default_sam31_checkpoint_path()))
+        self.checkpoint_path_edit.setToolTip(
+            "IT can pre-provision this file or you can download the pinned public model."
+        )
+        checkpoint_row.addWidget(self.checkpoint_path_edit)
+        checkpoint_browse = QPushButton("...")
+        checkpoint_browse.setMaximumWidth(30)
+        checkpoint_browse.clicked.connect(self.browse_checkpoint)
+        checkpoint_row.addWidget(checkpoint_browse)
+        backend_layout.addLayout(checkpoint_row)
+
+        self.download_model_btn = QPushButton(
+            "Download Public SAM 3.1 (1.63 GiB, no login)"
+        )
+        self.download_model_btn.clicked.connect(self.download_public_model)
+        backend_layout.addWidget(self.download_model_btn)
+
+        model_notice = QLabel(
+            '<small>Source: <a href="https://huggingface.co/Comfy-Org/sam3.1">'
+            "Comfy-Org/sam3.1</a>, pinned and SHA-256 verified. "
+            '<a href="https://huggingface.co/Comfy-Org/sam3.1/blob/main/LICENSE">'
+            "SAM license applies</a>.</small>"
+        )
+        model_notice.setWordWrap(True)
+        model_notice.setOpenExternalLinks(True)
+        backend_layout.addWidget(model_notice)
 
         # Interactive mode checkbox
         self.interactive_check = QCheckBox(
@@ -424,8 +526,69 @@ class SamGeoDockWidget(QDockWidget):
         layer_group.setLayout(layer_layout)
         model_layout.addWidget(layer_group)
 
-        model_layout.addStretch()
         return model_tab
+
+    def browse_checkpoint(self):
+        """Select an IT-provisioned SAM checkpoint."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select SAM 3.1 checkpoint",
+            self.checkpoint_path_edit.text(),
+            "SAM checkpoints (*.safetensors *.pt *.pth);;All files (*.*)",
+        )
+        if path:
+            self.checkpoint_path_edit.setText(path)
+
+    def download_public_model(self):
+        """Download or cancel the pinned, authentication-free checkpoint."""
+        if self.model_download_worker and self.model_download_worker.isRunning():
+            self.model_download_worker.cancel()
+            self.download_model_btn.setText("Cancelling download...")
+            self.download_model_btn.setEnabled(False)
+            return
+
+        destination = self.checkpoint_path_edit.text().strip()
+        if not destination:
+            from ..core.sam_models import default_sam31_checkpoint_path
+
+            destination = str(default_sam31_checkpoint_path())
+            self.checkpoint_path_edit.setText(destination)
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.load_model_btn.setEnabled(False)
+        self.download_model_btn.setText("Cancel Model Download")
+        self.model_status.setText("Preparing public SAM 3.1 download...")
+
+        self.model_download_worker = PublicModelDownloadWorker(destination, self)
+        self.model_download_worker.progress.connect(self._on_model_download_progress)
+        self.model_download_worker.downloaded.connect(self._on_model_downloaded)
+        self.model_download_worker.error.connect(self._on_model_download_error)
+        self.model_download_worker.start()
+
+    def _on_model_download_progress(self, percent: int, message: str):
+        self.progress_bar.setValue(percent)
+        self.model_status.setText(message)
+
+    def _finish_model_download_ui(self):
+        self.progress_bar.setVisible(False)
+        self.load_model_btn.setEnabled(True)
+        self.download_model_btn.setEnabled(True)
+        self.download_model_btn.setText("Download Public SAM 3.1 (1.63 GiB, no login)")
+
+    def _on_model_downloaded(self, path: str):
+        self.checkpoint_path_edit.setText(path)
+        self.model_status.setText("Public SAM 3.1 checkpoint ready")
+        self.model_status.setStyleSheet("color: green;")
+        self._finish_model_download_ui()
+
+    def _on_model_download_error(self, message: str):
+        self.model_status.setText("Model download failed")
+        self.model_status.setStyleSheet("color: red;")
+        self._finish_model_download_ui()
+        if "cancelled" not in message.lower():
+            self.show_error(f"Failed to download public model: {message}")
 
     def _create_text_tab(self):
         """Create the text prompts tab."""
@@ -1307,10 +1470,44 @@ class SamGeoDockWidget(QDockWidget):
 
         confidence = self.conf_spin.value()
         enable_interactive = self.interactive_check.isChecked()
+        model_id = None
+        checkpoint_path = None
+        if self.model_combo.currentData() == "sam31_public":
+            model_id = "facebook/sam3.1"
+            checkpoint_path = self.checkpoint_path_edit.text().strip()
+            if not checkpoint_path or not os.path.isfile(checkpoint_path):
+                self.progress_bar.setVisible(False)
+                self.load_model_btn.setEnabled(True)
+                self.model_status.setText("Model: Checkpoint required")
+                self.model_status.setStyleSheet("color: red;")
+                self.show_error(
+                    "The public SAM 3.1 checkpoint is not present. Use "
+                    "'Download Public SAM 3.1' or select a checkpoint "
+                    "provisioned by IT. No Hugging Face login is required."
+                )
+                return
+
+            if checkpoint_path.lower().endswith(".safetensors"):
+                from ..core.sam_models import validate_checkpoint
+
+                valid, validation_message = validate_checkpoint(checkpoint_path)
+                if not valid:
+                    self.progress_bar.setVisible(False)
+                    self.load_model_btn.setEnabled(True)
+                    self.model_status.setText("Model: Invalid checkpoint")
+                    self.model_status.setStyleSheet("color: red;")
+                    self.show_error(validation_message)
+                    return
 
         # Create and start the model loading worker thread
         self.model_load_worker = SamGeoModelLoadWorker(
-            model_version, backend, device, confidence, enable_interactive
+            model_version,
+            backend,
+            device,
+            confidence,
+            enable_interactive,
+            model_id=model_id,
+            checkpoint_path=checkpoint_path,
         )
         self.model_load_worker.finished.connect(self.on_model_loaded)
         self.model_load_worker.error.connect(self.on_model_load_error)
@@ -2416,6 +2613,15 @@ class SamGeoDockWidget(QDockWidget):
         if self.model_load_worker is not None and self.model_load_worker.isRunning():
             self.model_load_worker.terminate()
             self.model_load_worker.wait()
+
+        if (
+            self.model_download_worker is not None
+            and self.model_download_worker.isRunning()
+        ):
+            self.model_download_worker.cancel()
+            if not self.model_download_worker.wait(5000):
+                self.model_download_worker.terminate()
+                self.model_download_worker.wait()
 
         # Clean up temporary files (e.g., exported GeoPackage rasters)
         for temp_file in self._temp_files:

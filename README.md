@@ -1,5 +1,11 @@
 # GeoAI: Artificial Intelligence for Geospatial Data
 
+> **Corporate QGIS fork:** this fork preserves the upstream GeoAI feature set
+> while removing runtime downloads of Python, uv, Conda/Pixi, PowerShell, and
+> Git. It supports an IT-approved Python/pip runtime, internal indexes or an
+> offline wheelhouse, and a pinned public SAM 3.1 checkpoint that requires no
+> Hugging Face login. See [the corporate QGIS setup](qgis_plugin/README.md#corporate-quick-start).
+
 [![image](https://img.shields.io/pypi/v/geoai-py.svg)](https://pypi.python.org/pypi/geoai-py)
 [![image](https://static.pepy.tech/badge/geoai-py)](https://pepy.tech/project/geoai-py)
 [![image](https://img.shields.io/conda/vn/conda-forge/geoai.svg)](https://anaconda.org/conda-forge/geoai)

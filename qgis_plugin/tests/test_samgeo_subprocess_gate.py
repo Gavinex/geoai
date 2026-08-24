@@ -95,3 +95,42 @@ def test_resolve_device_survives_broken_torch(monkeypatch):
     _install_torch(monkeypatch, torch)
 
     assert samgeo_worker._resolve_device("auto") == "cpu"
+
+
+def test_worker_loads_public_sam31_from_local_checkpoint(monkeypatch, tmp_path):
+    from geoai.core import sam_models
+
+    checkpoint = tmp_path / "sam31.safetensors"
+    checkpoint.touch()
+    captured = {}
+
+    class FakeSamGeo3:
+        masks = []
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    fake_samgeo = types.ModuleType("samgeo")
+    fake_samgeo.SamGeo3 = FakeSamGeo3
+    monkeypatch.setitem(sys.modules, "samgeo", fake_samgeo)
+    monkeypatch.setattr(samgeo_worker, "_ensure_pkg_resources_shim", lambda: False)
+    monkeypatch.setattr(samgeo_worker, "_resolve_device", lambda _device: "cpu")
+    monkeypatch.setattr(sam_models, "enable_safetensors_checkpoint", lambda _path: None)
+
+    result = samgeo_worker._handle_init(
+        {
+            "model_version": "SamGeo3.1 (public checkpoint, no login)",
+            "backend": "meta",
+            "device": "cpu",
+            "confidence": 0.5,
+            "enable_interactive": True,
+            "model_id": "facebook/sam3.1",
+            "checkpoint_path": str(checkpoint),
+        }
+    )
+
+    assert captured["model_id"] == "facebook/sam3.1"
+    assert captured["checkpoint_path"] == str(checkpoint)
+    assert captured["load_from_HF"] is False
+    assert result["model_name"] == "SamGeo3.1 (public checkpoint)"
+    samgeo_worker._cleanup()

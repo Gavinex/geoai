@@ -194,9 +194,23 @@ def _handle_init(req: dict) -> Any:
     device = _resolve_device(req.get("device"))
     confidence = req.get("confidence")
     enable_interactive = bool(req.get("enable_interactive", False))
+    model_id = req.get("model_id")
+    checkpoint_path = req.get("checkpoint_path")
 
     if "SamGeo3" in model_version:
         from samgeo import SamGeo3
+
+        model_kwargs = {}
+        if model_id:
+            model_kwargs["model_id"] = model_id
+        if checkpoint_path:
+            from geoai.core.sam_models import enable_safetensors_checkpoint
+
+            enable_safetensors_checkpoint(checkpoint_path)
+            model_kwargs.update(
+                checkpoint_path=checkpoint_path,
+                load_from_HF=False,
+            )
 
         sam = _run_quiet_stdout(
             SamGeo3,
@@ -204,8 +218,13 @@ def _handle_init(req: dict) -> Any:
             device=device,
             confidence_threshold=confidence,
             enable_inst_interactivity=enable_interactive,
+            **model_kwargs,
         )
-        model_name = "SamGeo3"
+        model_name = (
+            "SamGeo3.1 (public checkpoint)"
+            if model_id == "facebook/sam3.1"
+            else "SamGeo3"
+        )
     elif "SamGeo2" in model_version:
         from samgeo import SamGeo2
 

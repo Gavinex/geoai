@@ -56,28 +56,39 @@ class DepsInstallDockWidget(QDockWidget):
         welcome_layout = QVBoxLayout(welcome_group)
 
         welcome_text = QLabel(
-            "GeoAI needs to install AI dependencies before you can use it.\n\n"
-            "This is a one-time setup that will:\n"
-            "  \u2022 Download a Python runtime (~50 MB)\n"
-            "  \u2022 Download a fast package installer (~15 MB)\n"
-            "  \u2022 Install AI packages (~1\u20133 GB)"
+            "GeoAI needs an isolated Python runtime before you can use it.\n\n"
+            "Corporate setup will:\n"
+            "  \u2022 Use QGIS Python or the IT-approved GEOAI_PYTHON\n"
+            "  \u2022 Create an environment with Python's built-in venv\n"
+            "  \u2022 Install with standard pip from an approved index or wheelhouse\n\n"
+            "It does not download Python, uv, Conda, PowerShell scripts, or Git."
         )
         welcome_text.setWordWrap(True)
         welcome_layout.addWidget(welcome_text)
 
-        from ..core.venv_manager import CACHE_DIR
+        from ..core.venv_manager import VENV_DIR
 
         _home = os.path.expanduser("~")
         _display = (
-            ("~" + CACHE_DIR[len(_home) :])
-            if CACHE_DIR.startswith(_home)
-            else CACHE_DIR
+            ("~" + VENV_DIR[len(_home) :]) if VENV_DIR.startswith(_home) else VENV_DIR
         )
         location_label = QLabel(
-            f"<small>Installation location: <code>{_display}</code></small>"
+            f"<small>Runtime location: <code>{_display}</code></small>"
         )
         location_label.setWordWrap(True)
         welcome_layout.addWidget(location_label)
+
+        wheelhouse = os.environ.get("GEOAI_WHEELHOUSE", "").strip()
+        index_url = os.environ.get("GEOAI_PIP_INDEX_URL", "").strip()
+        if wheelhouse:
+            source_text = f"Offline wheelhouse: <code>{wheelhouse}</code>"
+        elif index_url:
+            source_text = f"Approved package index: <code>{index_url}</code>"
+        else:
+            source_text = "Package source: pip configuration / system policy"
+        source_label = QLabel(f"<small>{source_text}</small>")
+        source_label.setWordWrap(True)
+        welcome_layout.addWidget(source_label)
 
         layout.addWidget(welcome_group)
 
@@ -94,7 +105,7 @@ class DepsInstallDockWidget(QDockWidget):
         # Action buttons
         button_layout = QHBoxLayout()
 
-        self.install_button = QPushButton("Install Dependencies")
+        self.install_button = QPushButton("Create / Verify Runtime")
         self.install_button.setMinimumHeight(36)
         self.install_button.setStyleSheet(
             "QPushButton { font-weight: bold; font-size: 13px; }"
@@ -145,9 +156,9 @@ class DepsInstallDockWidget(QDockWidget):
         help_label = QLabel(
             "<small>"
             "If you encounter issues, please check the "
-            '<a href="https://opengeoai.org/qgis_plugin/">documentation</a> '
+            '<a href="https://github.com/Gavinex/geoai/blob/main/qgis_plugin/README.md">documentation</a> '
             "or report a bug on "
-            '<a href="https://github.com/opengeos/geoai/issues">GitHub</a>.'
+            '<a href="https://github.com/Gavinex/geoai/issues">GitHub</a>.'
             "</small>"
         )
         help_label.setWordWrap(True)
@@ -213,13 +224,14 @@ class DepsInstallDockWidget(QDockWidget):
                 self.gpu_label.setText("Could not detect GPU.\nCPU mode will be used.")
 
     def _on_reinstall_clicked(self):
-        """Handle reinstall button click by removing existing venv first."""
-        try:
-            from ..core.venv_manager import remove_venv
+        """Retry setup, preserving an externally provisioned IT runtime."""
+        if not os.environ.get("GEOAI_RUNTIME_DIR", "").strip():
+            try:
+                from ..core.venv_manager import remove_venv
 
-            remove_venv()
-        except Exception:
-            pass
+                remove_venv()
+            except Exception:
+                pass
         self.reinstall_button.hide()
         self.install_requested.emit()
 

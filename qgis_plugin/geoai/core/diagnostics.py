@@ -19,6 +19,7 @@ from .venv_manager import (
     detect_nvidia_gpu,
     get_venv_python_path,
     get_venv_site_packages,
+    is_corporate_mode,
     venv_exists,
 )
 
@@ -84,6 +85,7 @@ def generate_diagnostics_report() -> str:
         "",
         "## Managed Environment",
         "",
+        f"- Corporate runtime mode: `{_yes_no(is_corporate_mode())}`",
         f"- Cache directory: `{_value(venv_info['cache_dir'])}`",
         f"- Virtual environment path: `{_value(venv_info['venv_dir'])}`",
         f"- Virtual environment exists: `{_yes_no(venv_info['exists'])}`",
@@ -91,6 +93,10 @@ def generate_diagnostics_report() -> str:
         f"- Virtual environment site-packages: `{_value(venv_info['site_packages'])}`",
         f"- GEOAI_CACHE_DIR: `{_value(os.environ.get('GEOAI_CACHE_DIR'), '<unset>')}`",
         f"- GEOAI_VENV_DIR: `{_value(os.environ.get('GEOAI_VENV_DIR'), '<unset>')}`",
+        f"- GEOAI_RUNTIME_DIR: `{_value(os.environ.get('GEOAI_RUNTIME_DIR'), '<unset>')}`",
+        f"- GEOAI_PYTHON: `{_value(os.environ.get('GEOAI_PYTHON'), '<unset>')}`",
+        f"- GEOAI_WHEELHOUSE: `{_value(os.environ.get('GEOAI_WHEELHOUSE'), '<unset>')}`",
+        f"- GEOAI_SAM31_CHECKPOINT: `{_value(os.environ.get('GEOAI_SAM31_CHECKPOINT'), '<unset>')}`",
         "",
         "## GPU Detection",
         "",

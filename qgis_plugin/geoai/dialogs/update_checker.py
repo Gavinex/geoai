@@ -29,7 +29,7 @@ from qgis.PyQt.QtWidgets import (
 from qgis.PyQt.QtGui import QFont
 
 # GitHub URLs for the plugin
-GITHUB_REPO = "opengeos/geoai"
+GITHUB_REPO = "Gavinex/geoai"
 GITHUB_BRANCH = "main"
 PLUGIN_PATH = "qgis_plugin/geoai"
 METADATA_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{PLUGIN_PATH}/metadata.txt"

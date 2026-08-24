@@ -28,28 +28,30 @@ CACHE_DIR = (
     or os.environ.get("GEOAI_VENV_DIR")
     or os.path.expanduser("~/.qgis_geoai")
 )
-VENV_DIR = os.path.join(CACHE_DIR, f"venv_{PYTHON_VERSION}")
+VENV_DIR = os.path.abspath(
+    os.path.expanduser(
+        os.environ.get("GEOAI_RUNTIME_DIR", "")
+        or os.path.join(CACHE_DIR, f"venv_{PYTHON_VERSION}")
+    )
+)
 
 REQUIRED_PACKAGES = [
-    ("torch", ">=2.0.0"),
-    ("torchvision", ">=0.15.0"),
-    ("geoai-py", ">=0.39.0"),
-    ("segment-geospatial", ""),
-    ("sam3", ""),
-    ("deepforest", ""),
-    ("omniwatermask", ""),
-    # Version is kept at or above the geoai-py runtime requirement so the
-    # QGIS managed environment can resolve on Windows/Python 3.12.
-    # Older exact pins caused impossible constraints when geoai-py required a
-    # newer transformers release.
-    ("transformers", ">=4.56.2"),
+    ("torch", "==2.7.1"),
+    ("torchvision", "==0.22.1"),
+    ("geoai-py", "==0.42.0"),
+    ("segment-geospatial", "==1.4.1"),
+    ("sam3", "==0.1.4"),
+    ("deepforest", "==2.1.0"),
+    ("omniwatermask", "==0.6.2"),
+    ("transformers", "==4.57.6"),
+    ("safetensors", "==0.5.3"),
 ]
 
 DEPS_HASH_FILE = os.path.join(VENV_DIR, "deps_hash.txt")
 CUDA_FLAG_FILE = os.path.join(VENV_DIR, "cuda_installed.txt")
 
 # Bump when install logic changes significantly to force re-install.
-_INSTALL_LOGIC_VERSION = "12"
+_INSTALL_LOGIC_VERSION = "13-corporate"
 
 # Bump independently for CUDA-specific install logic changes.
 _CUDA_LOGIC_VERSION = "1"
@@ -69,6 +71,16 @@ _MIN_COMPUTE_CAP_FOR_CU128 = 12.0
 
 # Cache for detect_nvidia_gpu() — avoids re-running nvidia-smi.
 _gpu_detect_cache = None  # type: Optional[Tuple[bool, dict]]
+
+
+def is_corporate_mode() -> bool:
+    """Return whether executable downloads are disabled for this build."""
+
+    return True
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _log(message: str, level=Qgis.Info):
@@ -207,7 +219,7 @@ def _get_required_packages_for_platform(platform_name: str) -> List[Tuple[str, s
             (i for i, (name, _) in enumerate(packages) if name == "sam3"),
             len(packages),
         )
-        packages.insert(sam3_idx, ("triton-windows", ""))
+        packages.insert(sam3_idx, ("triton-windows", "==3.3.1.post19"))
     return packages
 
 
@@ -708,13 +720,20 @@ def _truncate_error(output: str, limit: int = _ERROR_DETAIL_LIMIT) -> str:
 
 
 def _get_pip_ssl_flags() -> List[str]:
-    """Get pip flags to bypass SSL verification for corporate proxies.
+    """Get explicitly configured pip host trust flags.
 
-    Returns:
-        List of pip command-line flags.
+    The corporate build never disables TLS verification implicitly.  Set
+    ``GEOAI_PIP_TRUSTED_HOST`` to an IT-approved, space-separated host list,
+    or opt into the upstream fallback with ``GEOAI_ALLOW_INSECURE_INSTALL=1``.
     """
     flags = []
-    for host in _INSECURE_PACKAGE_HOSTS:
+    configured = tuple(
+        host for host in os.environ.get("GEOAI_PIP_TRUSTED_HOST", "").split() if host
+    )
+    hosts = configured
+    if not hosts and _env_truthy("GEOAI_ALLOW_INSECURE_INSTALL"):
+        hosts = _INSECURE_PACKAGE_HOSTS
+    for host in hosts:
         flags.extend(["--trusted-host", host])
     return flags
 
@@ -768,9 +787,32 @@ def _apply_package_host_env(env: dict) -> None:
     Args:
         env: Environment dictionary to update in-place.
     """
-    _append_space_separated_env(env, "PIP_TRUSTED_HOST", _INSECURE_PACKAGE_HOSTS)
+    trusted_hosts = tuple(
+        host for host in os.environ.get("GEOAI_PIP_TRUSTED_HOST", "").split() if host
+    )
+    if not trusted_hosts and _env_truthy("GEOAI_ALLOW_INSECURE_INSTALL"):
+        trusted_hosts = _INSECURE_PACKAGE_HOSTS
+    if trusted_hosts:
+        _append_space_separated_env(env, "PIP_TRUSTED_HOST", trusted_hosts)
     env.setdefault("UV_NATIVE_TLS", "true")
-    _append_space_separated_env(env, "UV_INSECURE_HOST", _INSECURE_PACKAGE_HOSTS)
+    if trusted_hosts:
+        _append_space_separated_env(env, "UV_INSECURE_HOST", trusted_hosts)
+
+    wheelhouse = os.environ.get("GEOAI_WHEELHOUSE", "").strip()
+    if wheelhouse:
+        wheelhouse_path = os.path.abspath(os.path.expanduser(wheelhouse))
+        env["PIP_NO_INDEX"] = "1"
+        env["PIP_FIND_LINKS"] = wheelhouse_path
+
+    mappings = {
+        "GEOAI_PIP_INDEX_URL": "PIP_INDEX_URL",
+        "GEOAI_PIP_EXTRA_INDEX_URL": "PIP_EXTRA_INDEX_URL",
+        "GEOAI_PIP_CERT": "PIP_CERT",
+    }
+    for source, target in mappings.items():
+        value = os.environ.get(source, "").strip()
+        if value:
+            env[target] = value
 
 
 def _is_network_error(output: str) -> bool:
@@ -1301,37 +1343,23 @@ def _repair_corrupted_geoai_init(site_packages: str) -> None:
             Qgis.Warning,
         )
 
-    # Reinstall geoai-py to get a clean copy.
-    from .uv_manager import get_uv_path, uv_exists
-
+    # Reinstall geoai-py to get a clean copy using approved pip only.
     python_path = get_venv_python_path()
     env = _get_clean_env_for_venv()
     subprocess_kwargs = _get_subprocess_kwargs()
 
     try:
-        if uv_exists():
-            cmd = [
-                get_uv_path(),
-                "pip",
-                "install",
-                "--python",
-                python_path,
-                "--force-reinstall",
-                "--no-deps",
-                "geoai-py",
-            ]
-        else:
-            cmd = [
-                python_path,
-                "-m",
-                "pip",
-                "install",
-                "--force-reinstall",
-                "--no-deps",
-                "--no-warn-script-location",
-                "--disable-pip-version-check",
-                "geoai-py",
-            ]
+        cmd = [
+            python_path,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            "--no-warn-script-location",
+            "--disable-pip-version-check",
+            "geoai-py==0.42.0",
+        ]
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -1801,11 +1829,49 @@ def _get_linux_system_python() -> Optional[str]:
     return None
 
 
+def _get_configured_python() -> Optional[str]:
+    """Validate the Python executable approved through ``GEOAI_PYTHON``."""
+
+    configured = os.environ.get("GEOAI_PYTHON", "").strip()
+    if not configured:
+        return None
+    python_path = os.path.abspath(os.path.expanduser(configured))
+    if not os.path.isfile(python_path):
+        raise RuntimeError(f"GEOAI_PYTHON does not exist: {python_path}")
+    try:
+        result = subprocess.run(
+            [
+                python_path,
+                "-c",
+                "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_get_clean_env_for_venv(),
+            **_get_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"GEOAI_PYTHON could not be started: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            "GEOAI_PYTHON failed verification: "
+            + _truncate_error(result.stderr or result.stdout or "")
+        )
+    expected = f"{sys.version_info.major}.{sys.version_info.minor}"
+    actual = result.stdout.strip()
+    if actual != expected:
+        raise RuntimeError(
+            f"GEOAI_PYTHON is Python {actual}; QGIS requires matching Python {expected}"
+        )
+    return python_path
+
+
 def _get_system_python() -> str:
     """Get the path to the Python executable for creating venvs.
 
-    Uses standalone Python downloaded by python_manager, with fallback
-    to QGIS's bundled Python on Windows or system Python on Linux.
+    The corporate build prefers an IT-approved ``GEOAI_PYTHON`` executable
+    and never downloads an interpreter.
 
     Returns:
         Path to the Python executable.
@@ -1813,45 +1879,31 @@ def _get_system_python() -> str:
     Raises:
         RuntimeError: If no suitable Python is found.
     """
-    from .python_manager import get_standalone_python_path, standalone_python_exists
+    configured_python = _get_configured_python()
+    if configured_python:
+        _log(f"Using IT-approved Python: {configured_python}", Qgis.Info)
+        return configured_python
 
-    if standalone_python_exists():
-        python_path = get_standalone_python_path()
-        _log(f"Using standalone Python: {python_path}", Qgis.Info)
-        return python_path
+    if is_corporate_mode():
+        if sys.platform == "win32":
+            qgis_python = _get_qgis_python()
+            if qgis_python:
+                _log("Using QGIS bundled Python", Qgis.Info)
+                return qgis_python
+        elif sys.platform.startswith("linux"):
+            linux_python = _get_linux_system_python()
+            if linux_python:
+                _log("Using approved system Python", Qgis.Info)
+                return linux_python
+        elif not _is_macos_qgis_app_bundle_python(sys.executable):
+            return sys.executable
 
-    if sys.platform == "win32":
-        qgis_python = _get_qgis_python()
-        if qgis_python:
-            _log(
-                "Standalone Python unavailable, using QGIS Python as fallback",
-                Qgis.Warning,
-            )
-            return qgis_python
-    elif _is_macos_qgis_app_bundle_python(sys.executable):
         raise RuntimeError(
-            "QGIS app-bundle Python is not safe for creating virtual "
-            "environments; use uv-managed Python instead."
+            "No approved Python executable is available. Install Python with "
+            "the same major/minor version as QGIS and set GEOAI_PYTHON to its "
+            "absolute path before starting QGIS. The corporate build will not "
+            "download Python automatically."
         )
-    elif sys.platform.startswith("linux"):
-        linux_python = _get_linux_system_python()
-        if linux_python:
-            _log(
-                "Standalone Python unavailable, using system Python as fallback",
-                Qgis.Warning,
-            )
-            return linux_python
-
-    if sys.platform.startswith("linux"):
-        raise RuntimeError(
-            "Python standalone not installed and no suitable system Python found. "
-            "Please ensure python3 and python3-venv are installed "
-            "(e.g., sudo apt install python3-venv) and click 'Install Dependencies'."
-        )
-    raise RuntimeError(
-        "Python standalone not installed. "
-        "Please click 'Install Dependencies' to download Python automatically."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1902,32 +1954,17 @@ def create_venv(
         python_lookup_error = str(exc)
     if python_lookup_error and system_python is None:
         _log(
-            "Python lookup failed; falling back to uv-managed Python if "
-            f"available: {python_lookup_error}",
+            f"Approved Python lookup failed: {python_lookup_error}",
             Qgis.Warning,
         )
     if system_python:
         _log(f"Using Python: {system_python}", Qgis.Info)
 
-    from .uv_manager import get_uv_path, uv_exists
-
-    use_uv = uv_exists()
-
-    if use_uv:
-        uv_path = get_uv_path()
-        uv_python = (
-            system_python or f"{sys.version_info.major}.{sys.version_info.minor}"
-        )
-        cmd = [uv_path, "venv"]
-        if system_python is None:
-            cmd.append("--managed-python")
-        cmd += ["--python", uv_python, venv_dir]
-        _log(f"Creating venv with uv: {uv_path}", Qgis.Info)
-    else:
-        if system_python is None:
-            return False, python_lookup_error
-        cmd = [system_python, "-m", "venv", venv_dir]
-        _log("Creating venv with python -m venv", Qgis.Info)
+    use_uv = False
+    if system_python is None:
+        return False, python_lookup_error
+    cmd = [system_python, "-m", "venv", venv_dir]
+    _log("Creating venv with python -m venv", Qgis.Info)
 
     try:
         env = _get_clean_env_for_venv()
@@ -1941,29 +1978,6 @@ def create_venv(
             env=env,
             **subprocess_kwargs,
         )
-
-        if result.returncode != 0 and use_uv and system_python:
-            # uv venv failed; fall back to stdlib venv
-            _log(
-                "uv venv failed ({}), falling back to python -m venv".format(
-                    result.stderr.strip() if result.stderr else result.returncode
-                ),
-                Qgis.Warning,
-            )
-            from .uv_manager import remove_uv
-
-            remove_uv()
-            use_uv = False
-            _cleanup_partial_venv(venv_dir)
-            cmd = [system_python, "-m", "venv", venv_dir]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env=env,
-                **subprocess_kwargs,
-            )
 
         if result.returncode == 0:
             _log("Virtual environment created successfully", Qgis.Success)
@@ -2363,13 +2377,11 @@ def _reinstall_cpu_torch(
         venv_dir: Path to the virtual environment.
         progress_callback: Optional progress callback.
     """
-    from .uv_manager import get_uv_path, uv_exists
-
     python_path = get_venv_python_path(venv_dir)
     env = _get_clean_env_for_venv()
     subprocess_kwargs = _get_subprocess_kwargs()
-    _use_uv = uv_exists()
-    _uv_path = get_uv_path() if _use_uv else None
+    _use_uv = False
+    _uv_path = None
 
     _log("Reinstalling CPU-only torch/torchvision...", Qgis.Warning)
     if progress_callback:
@@ -2407,7 +2419,7 @@ def _reinstall_cpu_torch(
     except Exception as e:
         _log(f"torch uninstall error (continuing): {e}", Qgis.Warning)
 
-    for pkg in ("torch>=2.0.0", "torchvision>=0.15.0"):
+    for pkg in ("torch==2.7.1", "torchvision==0.22.1"):
         try:
             if _use_uv:
                 cmd = (
@@ -2803,10 +2815,8 @@ def install_dependencies(
     if not venv_exists(venv_dir):
         return False, "Virtual environment does not exist"
 
-    from .uv_manager import get_uv_path, uv_exists
-
-    use_uv = uv_exists()
-    uv_path = get_uv_path() if use_uv else None
+    use_uv = False
+    uv_path = None
     if use_uv:
         _log(f"Installing dependencies using uv: {uv_path}", Qgis.Info)
     else:
@@ -4085,19 +4095,6 @@ def get_venv_status() -> Tuple[bool, str]:
     Returns:
         Tuple of (is_ready, message).
     """
-    from .python_manager import get_python_full_version, standalone_python_exists
-
-    if not standalone_python_exists():
-        # Also check for QGIS Python fallback on Windows or system Python
-        # fallback on Linux
-        if (
-            sys.platform == "win32" or sys.platform.startswith("linux")
-        ) and venv_exists():
-            pass  # venv was created with fallback Python
-        else:
-            _log("get_venv_status: standalone Python not found", Qgis.Info)
-            return False, "Dependencies not installed"
-
     if not venv_exists():
         _log(f"get_venv_status: venv not found at {VENV_DIR}", Qgis.Info)
         return False, "Virtual environment not configured"
@@ -4119,7 +4116,7 @@ def get_venv_status() -> Tuple[bool, str]:
                 Qgis.Info,
             )
             _write_deps_hash()
-        python_version = get_python_full_version()
+        python_version = "{}.{}".format(sys.version_info.major, sys.version_info.minor)
         _log("get_venv_status: ready (quick check passed)", Qgis.Success)
         return True, "Ready (Python {})".format(python_version)
     else:
@@ -4161,12 +4158,11 @@ def create_venv_and_install(
     cancel_check: Optional[Callable[[], bool]] = None,
     cuda_enabled: bool = False,
 ) -> Tuple[bool, str]:
-    """Complete installation: download Python + uv + create venv + install.
+    """Create an isolated runtime with approved Python and standard pip.
 
     Progress breakdown:
-    - 0-10%: Download Python standalone (~50MB)
-    - 10-13%: Download uv package installer (~15MB)
-    - 13-18%: Create virtual environment
+    - 0-13%: Validate approved Python and package source
+    - 13-18%: Create virtual environment with ``python -m venv``
     - 18-95%: Install packages
     - 95-100%: Verify installation
 
@@ -4178,14 +4174,6 @@ def create_venv_and_install(
     Returns:
         Tuple of (success, message).
     """
-    from .python_manager import (
-        download_python_standalone,
-        get_python_full_version,
-        standalone_python_exists,
-    )
-    from .uv_manager import download_uv
-    from .uv_manager import uv_exists as _uv_exists
-
     _log_system_info()
 
     # Early check: verify cache directory is writable
@@ -4213,100 +4201,21 @@ def create_venv_and_install(
     if removed_venvs:
         _log(f"Removed {len(removed_venvs)} old venv directories", Qgis.Info)
 
-    # Step 1: Download Python standalone (0-10%)
-    if not standalone_python_exists():
-        python_version = get_python_full_version()
-        _log(f"Downloading Python {python_version} standalone...", Qgis.Info)
-
-        def python_progress(percent, msg):
-            if progress_callback:
-                progress_callback(int(percent * 0.10), msg)
-
-        success, msg = download_python_standalone(
-            progress_callback=python_progress,
-            cancel_check=cancel_check,
-        )
-
-        if not success:
-            if sys.platform == "win32":
-                qgis_python = _get_qgis_python()
-                if qgis_python:
-                    if sys.version_info < (3, 9):
-                        py_ver = "{}.{}.{}".format(
-                            sys.version_info.major,
-                            sys.version_info.minor,
-                            sys.version_info.micro,
-                        )
-                        return (
-                            False,
-                            "Python {} is too old. Please upgrade QGIS.".format(py_ver),
-                        )
-                    _log(
-                        "Standalone Python download failed, "
-                        "falling back to QGIS Python: {}".format(msg),
-                        Qgis.Warning,
-                    )
-                    if progress_callback:
-                        progress_callback(10, "Using QGIS Python (fallback)...")
-                else:
-                    return False, f"Failed to download Python: {msg}"
-            elif sys.platform.startswith("linux"):
-                linux_python = _get_linux_system_python()
-                if linux_python:
-                    _log(
-                        "Standalone Python download failed, "
-                        "falling back to system Python: {}".format(msg),
-                        Qgis.Warning,
-                    )
-                    if progress_callback:
-                        progress_callback(10, "Using system Python (fallback)...")
-                else:
-                    return False, (
-                        "Failed to download Python: {}\n"
-                        "No suitable system Python found. Please ensure python3 "
-                        "and python3-venv are installed "
-                        "(e.g., sudo apt install python3-venv)."
-                    ).format(msg)
-            else:
-                return False, f"Failed to download Python: {msg}"
-
-        if cancel_check and cancel_check():
-            return False, "Installation cancelled"
-    else:
-        _log("Python standalone already installed", Qgis.Info)
-        if progress_callback:
-            progress_callback(10, "Python standalone ready")
-
-    # Step 1b: Download uv package installer (10-13%)
-    if not _uv_exists():
-        _log("Downloading uv package installer...", Qgis.Info)
-        if progress_callback:
-            progress_callback(10, "Downloading uv package installer...")
-
-        def uv_progress(percent, msg):
-            if progress_callback:
-                # Map 0-100 to 10-13
-                progress_callback(10 + int(percent * 0.03), msg)
-
-        uv_success, uv_msg = download_uv(
-            progress_callback=uv_progress,
-            cancel_check=cancel_check,
-        )
-        if not uv_success:
-            # Non-fatal: fall back to pip for venv creation and installation
-            _log(
-                "uv download failed (will use pip instead): {}".format(uv_msg),
-                Qgis.Warning,
-            )
-        else:
-            _log("uv package installer ready", Qgis.Info)
-
-        if cancel_check and cancel_check():
-            return False, "Installation cancelled"
-    else:
-        _log("uv package installer already installed", Qgis.Info)
-        if progress_callback:
-            progress_callback(13, "uv package installer ready")
+    # Corporate baseline: never fetch or execute a Python/uv bootstrap binary.
+    # A pre-provisioned runtime is accepted as-is; otherwise QGIS's matching
+    # Python or GEOAI_PYTHON creates it with the standard library venv module.
+    wheelhouse = os.environ.get("GEOAI_WHEELHOUSE", "").strip()
+    if wheelhouse and not os.path.isdir(os.path.expanduser(wheelhouse)):
+        return False, f"GEOAI_WHEELHOUSE does not exist: {wheelhouse}"
+    if not venv_exists():
+        try:
+            approved_python = _get_system_python()
+        except RuntimeError as exc:
+            return False, str(exc)
+        _log(f"Approved Python ready: {approved_python}", Qgis.Info)
+    if progress_callback:
+        source = "offline wheelhouse" if wheelhouse else "approved pip source"
+        progress_callback(13, f"Using {source}; no bootstrap executables downloaded")
 
     # Step 2: Create venv (13-18%)
     reusable_venv = False

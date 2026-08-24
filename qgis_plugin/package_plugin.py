@@ -39,6 +39,10 @@ EXCLUDE_PATTERNS = [
     # IDE/editor files
     r"^\..*\.swp$",
     r"^.*\.orig$",
+    # Corporate build excludes upstream executable download managers. The
+    # runtime uses approved Python + standard pip from venv_manager.py.
+    r"^python_manager\.py$",
+    r"^uv_manager\.py$",
 ]
 
 # Directory names to exclude

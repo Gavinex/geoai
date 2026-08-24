@@ -1,17 +1,19 @@
 # QGIS Plugin for GeoAI
 
+> **Corporate fork:** use the [corporate QGIS setup](../qgis_plugin/README.md#corporate-quick-start), not the upstream Pixi/PowerShell instructions retained later in this page for reference. The internal build uses approved Python plus standard pip or an offline wheelhouse, and a public SAM 3.1 checkpoint with no Hugging Face login.
+
 [![QGIS](https://img.shields.io/badge/QGIS-plugin-orange.svg)](https://plugins.qgis.org/plugins/geoai)
 [![image](https://img.shields.io/badge/YouTube-Tutorials-red)](https://www.youtube.com/playlist?list=PLAxJ4-o7ZoPcvENqwaPa_QwbbkZ5sctZE)
 [![DOI](https://joss.theoj.org/papers/10.21105/joss.09605/status.svg)](https://doi.org/10.21105/joss.09605)
 
 A [QGIS plugin](https://plugins.qgis.org/plugins/geoai) that brings the [geoai](https://github.com/opengeos/geoai) models into dockable panels (Tree Segmentation, Water Segmentation, Moondream VLM, Segment Anything, Semantic Segmentation, Instance Segmentation) so you can keep QGIS as your main workspace while experimenting with GeoAI. It supports Linux, Windows, and macOS. For better performance, it is recommended to use a GPU with CUDA support. Apple Silicon users can use the Apple MPS backend for GPU acceleration. If no GPU is available, the plugin will run on CPU.
 
-## Quick Start
+## Corporate Quick Start
 
-- Install the QGIS plugin from the QGIS Plugin Manager. Alternatively, you can download the plugin from [here](https://qgis.gishub.org/plugins/geoai.zip) and install it manually.
-- Enable the GeoAI plugin in QGIS.
-- Open any GeoAI toolbar panel — the built-in installer will guide you through dependency setup (one-click).
-- Try the sample datasets below.
+- Build and install the internal **GeoAI Corporate** ZIP from this fork.
+- Provision the runtime with `qgis_plugin/setup_corporate_runtime.py`, an approved Python package index, or an offline wheelhouse.
+- Enable **GeoAI Corporate** in QGIS.
+- Download the pinned public SAM 3.1 model from the Model tab or select the copy provisioned by IT.
 
 ## Video Tutorials
 
@@ -302,21 +304,9 @@ DeepForest might downgrade numpy to 1.26.4. You can use the following command to
 pixi run pip install -U numpy transformers
 ```
 
-#### Request access to SAM 3
+#### Public SAM 3.1 in the corporate fork
 
-To use SAM 3, you will need to request access by filling out this form on Hugging Face at <https://huggingface.co/facebook/sam3>. Once your request has been approved, run the following command in the terminal to authenticate:
-
-```bash
-pixi run hf auth login
-```
-
-After authentication, you can download the SAM 3 model from Hugging Face:
-
-```bash
-pixi run hf download facebook/sam3
-```
-
-**Important Note**: SAM 3 currently requires a NVIDIA GPU with CUDA support. You won't be able to use SAM 3 if you have a CPU only system ([source](https://github.com/facebookresearch/sam3/issues/164)). You will get an error message like this: `Failed to load model: Torch not compiled with CUDA enabled`.
+The internal build does not use Meta's gated model repository or a login flow. Use **Segment Anything → Model → Download Public SAM 3.1**, or set `GEOAI_SAM31_CHECKPOINT` to the checksum-verified copy provisioned by IT. CUDA is recommended; CPU mode is supported but slow.
 
 ### 2. Install the QGIS plugin
 

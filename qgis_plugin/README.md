@@ -1,14 +1,26 @@
 # QGIS Plugin for GeoAI
 
-A QGIS plugin that brings the [geoai](https://github.com/opengeos/geoai) models into dockable panels (Moondream VLM, segmentation training/inference, SamGeo) so you can keep QGIS as your main workspace while experimenting with GeoAI.
+A corporate-friendly fork of the [upstream GeoAI plugin](https://github.com/opengeos/geoai) with the same dockable AI tools and a policy-safe runtime path. The plugin does not download or execute Python, uv, Conda/Pixi, PowerShell, or Git installers.
 
-## Quick Start
+## Corporate Quick Start
 
--   Create a Pixi project and install the dependencies.
--   Install the QGIS plugin from the QGIS Plugin Manager.
--   Enable the GeoAI plugin in QGIS.
--   Restart QGIS.
--   Open a GeoAI toolbar panel and try the sample datasets below.
+1. Install an IT-approved Python that matches QGIS's Python major/minor version (the Windows pilot uses Python 3.12).
+2. Create the runtime with standard Python and pip:
+
+    ```text
+    python qgis_plugin/setup_corporate_runtime.py --python C:\path\to\approved\python.exe
+    ```
+
+3. For an offline deployment, have IT build a complete wheelhouse from `qgis_plugin/geoai/runtime/requirements-corporate.txt`, then run:
+
+    ```text
+    python qgis_plugin/setup_corporate_runtime.py --python C:\path\to\approved\python.exe --wheelhouse C:\approved\geoai-wheelhouse
+    ```
+
+4. Set `GEOAI_RUNTIME_DIR` to the runtime printed by the script before QGIS starts, install the plugin ZIP, and enable **GeoAI Corporate**.
+5. In **Segment Anything → Model**, either select an IT-provisioned checkpoint or click **Download Public SAM 3.1**. The 1.63 GiB file is public, pinned, checksum-verified, and needs no Hugging Face account or token. It remains subject to the [SAM License](geoai/runtime/MODEL_NOTICE.md), which company legal/security teams should approve before deployment.
+
+The built-in setup panel uses the same standard-library `venv` and pip path. Package sources can be controlled with `GEOAI_WHEELHOUSE`, `GEOAI_PIP_INDEX_URL`, `GEOAI_PIP_EXTRA_INDEX_URL`, and `GEOAI_PIP_CERT`. TLS verification is never disabled unless IT explicitly sets `GEOAI_PIP_TRUSTED_HOST` or `GEOAI_ALLOW_INSECURE_INSTALL=1`.
 
 ## Video Tutorials
 
@@ -28,8 +40,8 @@ Check out this [short video demo](https://youtu.be/Esr_e6_P1is) and [full video 
 
 ## Requirements
 
--   QGIS 3.28 or later
--   Python 3.10+ (Pixi recommended)
+-   QGIS 3.28 or later (QGIS 4.x supported)
+-   Python 3.12+ matching QGIS's embedded Python major/minor version
 -   PyTorch (CUDA if you want GPU acceleration)
 -   `geoai` and `samgeo` packages
 
@@ -52,7 +64,7 @@ Each tool lives inside a dockable panel that can be attached to either side of t
 
 ### SamGeo Panel (Segment Anything Model)
 
--   **Model Tab**: Load SAM models (SAM1, SAM2, or SAM3) with configurable backend and device settings
+-   **Model Tab**: Load the public SAM 3.1 checkpoint with configurable device settings and no Hugging Face authentication
 -   **Text Tab**: Segment objects using text prompts (e.g., "tree", "building", "road")
 -   **Interactive Tab**: Segment using point prompts (foreground/background) or box prompts drawn on the map
 -   **Batch Tab**: Process multiple points interactively or from vector files/layers
@@ -62,7 +74,11 @@ Each tool lives inside a dockable panel that can be attached to either side of t
 
 -   **Clear GPU Memory**: Release GPU memory and clear CUDA cache for all loaded models
 
-## Installation
+## Upstream Pixi Installation (Reference Only)
+
+> This section is retained for upstream comparison. It is not used or supported
+> by the corporate fork when Conda/Pixi, PowerShell, or runtime executable
+> downloads are blocked. Use [Corporate Quick Start](#corporate-quick-start).
 
 ### 1. Set up the environment
 
@@ -234,53 +250,28 @@ If CUDA is `False`, check:
 ---
 
 
-#### Request access to SAM 3
+#### Upstream gated SAM 3 (not used by this fork)
 
-To use SAM 3, you will need to request access by filling out this form on Hugging Face at <https://huggingface.co/facebook/sam3>. Once your request has been approved, run the following command in the terminal to authenticate:
-
-```bash
-pixi run hf auth login
-```
-
-After authentication, you can download the SAM 3 model from Hugging Face:
-
-```bash
-pixi run hf download facebook/sam3
-```
-
-**Important Note**: SAM 3 currently requires a NVIDIA GPU with CUDA support. You won't be able to use SAM 3 if you have a CPU only system ([source](https://github.com/facebookresearch/sam3/issues/164)). You will get an error message like this: `Failed to load model: Torch not compiled with CUDA enabled`.
+The corporate fork does not call Meta's gated model repository and contains no login flow. It uses the pinned public `Comfy-Org/sam3.1` checkpoint from the Model tab. CUDA is strongly recommended; CPU remains available but may take several minutes per request.
 
 ### 2. Install the QGIS plugin
 
-Option A — use QGIS Plugin Manager (recommended):
+Build the internal plugin ZIP:
 
-GeoAI is available as a QGIS plugin in the official [QGIS plugin repository](https://plugins.qgis.org/plugins/geoai). To install:
+```text
+python qgis_plugin/package_plugin.py --output geoai-corporate-1.7.1.zip
+```
 
-1. Launch QGIS: `pixi run qgis`
-2. Go to `Plugins` → `Manage and Install Plugins...`
-3. Switch to the `All` tab, search for `GeoAI`, select it, and click `Install Plugin`
+In QGIS, go to **Plugins → Manage and Install Plugins → Install from ZIP**, select that file, and enable **GeoAI Corporate**. Do not install the public repository version over this internal build; it uses the upstream dependency bootstrap.
 
-![](https://github.com/user-attachments/assets/b31d1d13-27ff-420a-84ab-9cc82ade9a8e)
+For a developer checkout, the helper script can copy the fork into the current QGIS profile:
 
-If you encounter an error message like this after installing the plugin, click **Close** to dismiss the dialog. Next, in the Plugin Manager, toggle the checkbox next to the **GeoAI** plugin in the plugin list to enable it. If the error dialog appears again, close it once more, then restart QGIS to reload the plugin. After restarting, the GeoAI plugin should appear in the QGIS toolbar.
-
-![](https://github.com/user-attachments/assets/cb1be4f9-eaba-4c0c-9c48-f209d39b2d71)
-
-Option B — use the helper script:
-
-```bash
-git clone https://github.com/opengeos/geoai.git
-cd geoai/qgis_plugin
+```text
+cd qgis_plugin
 python install.py
 ```
 
-This links/copies the plugin into your active QGIS profile. Re-run after pulling updates. Remove with:
-
-```bash
-python install.py --remove
-```
-
-Option C — manual copy:
+Manual copy is also supported:
 
 -   Copy the `qgis_plugin` folder to your QGIS plugins directory:
     -   Linux: `~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/`
@@ -289,9 +280,7 @@ Option C — manual copy:
 
 ### 3. Enable in QGIS
 
-Launch QGIS: `pixi run qgis`
-
-QGIS → `Plugins` → `Manage and Install Plugins...` → enable `GeoAI`. After updates, toggle the plugin off/on or restart QGIS to reload.
+Launch the company-installed QGIS, then use **Plugins → Manage and Install Plugins** to enable **GeoAI Corporate**. After updates, toggle the plugin off/on or restart QGIS to reload.
 
 ![](https://github.com/user-attachments/assets/1b6dab14-311d-4f62-85aa-1faed73ead5b)
 
@@ -431,9 +420,7 @@ The QGIS plugin supports any models supported by [Pytorch Segmentation Models](h
 
 ## Supported SAM Models (SamGeo)
 
--   **SamGeo3 (SAM3)**: Latest version with text prompts, point prompts, and box prompts
--   **SamGeo2 (SAM2)**: Improved version with better performance
--   **SamGeo (SAM1)**: Original Segment Anything Model
+-   **SamGeo3.1 (public checkpoint)**: Text, point, and box prompts through the Meta backend, using the pinned `Comfy-Org/sam3.1` safetensors file without login
 
 ## Troubleshooting
 
@@ -443,6 +430,10 @@ The QGIS plugin supports any models supported by [Pytorch Segmentation Models](h
 -   Model download failures: check network/firewall, then retry loading models from the panel.
 
 ### Windows installation issues
+
+The upstream PowerShell quick installer below is not part of the corporate
+deployment. Use the Python-only setup at the top of this document or an IT-built
+offline wheelhouse.
 
 If the plugin or dependencies fail to install on Windows when using the QGIS Plugin Manager, try a clean reinstall with the quick installer instead:
 
@@ -467,5 +458,6 @@ MIT License - see [LICENSE](../LICENSE) for details.
 
 -   [GeoAI Documentation](https://opengeoai.org)
 -   [SamGeo Documentation](https://samgeo.gishub.org)
--   [GitHub Repository](https://github.com/opengeos/geoai)
--   [Report Issues](https://github.com/opengeos/geoai/issues)
+-   [Corporate Fork](https://github.com/Gavinex/geoai)
+-   [Upstream Repository](https://github.com/opengeos/geoai)
+-   [Report Corporate-Fork Issues](https://github.com/Gavinex/geoai/issues)

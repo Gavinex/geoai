@@ -1,0 +1,10 @@
+deepforest==2.1.0
+geoai-py==0.42.0
+omniwatermask==0.6.2
+safetensors==0.5.3
+sam3==0.1.4
+segment-geospatial==1.4.1
+torch==2.7.1
+torchvision==0.22.1
+transformers==4.57.6
+triton-windows==3.3.1.post19; sys_platform == "win32"

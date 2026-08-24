@@ -59,12 +59,16 @@ class SamGeoSubprocessClient:
         device: Optional[str],
         confidence: float,
         enable_interactive: bool,
+        model_id: Optional[str] = None,
+        checkpoint_path: Optional[str] = None,
     ):
         self.model_version = model_version
         self.backend = backend
         self.device = device
         self.confidence = float(confidence)
         self.enable_interactive = bool(enable_interactive)
+        self.model_id = model_id
+        self.checkpoint_path = checkpoint_path
 
         self.model_name = "SamGeo"
         self.supported_methods = set()
@@ -128,6 +132,8 @@ class SamGeoSubprocessClient:
                         "device": self.device,
                         "confidence": self.confidence,
                         "enable_interactive": self.enable_interactive,
+                        "model_id": self.model_id,
+                        "checkpoint_path": self.checkpoint_path,
                     },
                     timeout=self._TIMEOUT_INIT,
                 )

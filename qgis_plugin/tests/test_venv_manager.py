@@ -20,6 +20,67 @@ def _write_dist_metadata(site_packages, dist_name, version):
     )
 
 
+def test_corporate_mode_is_default():
+    assert venv_manager.is_corporate_mode() is True
+
+
+def test_corporate_venv_uses_approved_python_not_uv(tmp_path, monkeypatch):
+    from geoai.core import uv_manager
+
+    calls = []
+    monkeypatch.setattr(venv_manager, "_get_system_python", lambda: "approved-python")
+    monkeypatch.setattr(uv_manager, "uv_exists", lambda: True)
+    monkeypatch.setattr(
+        uv_manager,
+        "get_uv_path",
+        lambda: (_ for _ in ()).throw(AssertionError("uv must not be used")),
+    )
+    monkeypatch.setattr(venv_manager, "_get_clean_env_for_venv", lambda: {})
+    monkeypatch.setattr(venv_manager, "_get_subprocess_kwargs", lambda: {})
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(venv_manager.subprocess, "run", fake_run)
+
+    ok, _ = venv_manager.create_venv(str(tmp_path / "runtime"))
+
+    assert ok is True
+    assert calls[0] == ["approved-python", "-m", "venv", str(tmp_path / "runtime")]
+    assert all("uv" not in command[0] for command in calls)
+
+
+def test_corporate_orchestration_skips_bootstrap_downloads(tmp_path, monkeypatch):
+    progress = []
+    monkeypatch.setattr(venv_manager, "CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(venv_manager, "VENV_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setattr(venv_manager, "cleanup_old_venv_directories", lambda: [])
+    monkeypatch.setattr(venv_manager, "venv_exists", lambda _path=None: False)
+    monkeypatch.setattr(venv_manager, "_get_system_python", lambda: "approved-python")
+    monkeypatch.setattr(
+        venv_manager, "create_venv", lambda **_kwargs: (True, "created")
+    )
+    monkeypatch.setattr(
+        venv_manager,
+        "install_dependencies",
+        lambda **_kwargs: (True, "All dependencies installed successfully"),
+    )
+    monkeypatch.setattr(
+        venv_manager, "verify_venv", lambda **_kwargs: (True, "verified")
+    )
+    monkeypatch.setattr(venv_manager, "_write_deps_hash", lambda: None)
+    monkeypatch.setattr(venv_manager, "_write_cuda_flag", lambda _value: None)
+
+    ok, message = venv_manager.create_venv_and_install(
+        progress_callback=lambda percent, text: progress.append((percent, text))
+    )
+
+    assert ok is True
+    assert message == "Virtual environment ready"
+    assert any("no bootstrap executables downloaded" in text for _, text in progress)
+
+
 def test_quick_check_rejects_stale_geoai_distribution(tmp_path, monkeypatch):
     site_packages = tmp_path / "site-packages"
     site_packages.mkdir()
@@ -77,11 +138,26 @@ def test_version_satisfies_fails_closed_for_unsupported_specifier():
     assert venv_manager._version_satisfies("0.39.0", "~=0.39.0") is False
 
 
-def test_pip_ssl_flags_trust_pytorch_wheel_host():
+def test_pip_ssl_flags_do_not_disable_tls_by_default(monkeypatch):
+    monkeypatch.delenv("GEOAI_PIP_TRUSTED_HOST", raising=False)
+    monkeypatch.delenv("GEOAI_ALLOW_INSECURE_INSTALL", raising=False)
     flags = venv_manager._get_pip_ssl_flags()
 
-    assert "--trusted-host" in flags
-    assert "download.pytorch.org" in flags
+    assert flags == []
+
+
+def test_pip_ssl_flags_use_only_it_approved_hosts(monkeypatch):
+    monkeypatch.setenv(
+        "GEOAI_PIP_TRUSTED_HOST", "packages.corp.example mirror.corp.example"
+    )
+    flags = venv_manager._get_pip_ssl_flags()
+
+    assert flags == [
+        "--trusted-host",
+        "packages.corp.example",
+        "--trusted-host",
+        "mirror.corp.example",
+    ]
 
 
 def test_insecure_package_hosts_is_immutable():
@@ -102,7 +178,8 @@ def test_uv_insecure_host_flags_allow_pytorch_wheel_host():
     assert "download.pytorch.org" in flags
 
 
-def test_apply_package_host_env_preserves_existing_values():
+def test_apply_package_host_env_preserves_existing_values(monkeypatch):
+    monkeypatch.setenv("GEOAI_PIP_TRUSTED_HOST", "files.pythonhosted.org")
     env = {"PIP_TRUSTED_HOST": "internal.example.com pypi.org"}
 
     venv_manager._apply_package_host_env(env)
@@ -111,8 +188,17 @@ def test_apply_package_host_env_preserves_existing_values():
     assert "internal.example.com" in env["PIP_TRUSTED_HOST"].split()
     assert env["PIP_TRUSTED_HOST"].split().count("pypi.org") == 1
     assert "files.pythonhosted.org" in env["PIP_TRUSTED_HOST"].split()
-    assert "pypi.org" in env["UV_INSECURE_HOST"].split()
-    assert "download.pytorch.org" in env["UV_INSECURE_HOST"].split()
+    assert env["UV_INSECURE_HOST"].split() == ["files.pythonhosted.org"]
+
+
+def test_apply_package_host_env_supports_offline_wheelhouse(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEOAI_WHEELHOUSE", str(tmp_path))
+    env = {}
+
+    venv_manager._apply_package_host_env(env)
+
+    assert env["PIP_NO_INDEX"] == "1"
+    assert env["PIP_FIND_LINKS"] == str(tmp_path)
 
 
 def test_ssl_error_detects_uv_rustls_unknown_issuer():
@@ -384,10 +470,10 @@ def test_build_constraint_args_drops_constraint_when_path_has_space(tmp_path):
     assert args == []
 
 
-def test_cuda_batch_install_constraint_arg_is_whitespace_free_for_uv(
+def test_corporate_cuda_install_ignores_uv_and_uses_pip_constraint(
     tmp_path, monkeypatch
 ):
-    """Regression test for issue #853: home directories containing a space."""
+    """Even an existing uv binary must not be invoked by the corporate build."""
     from geoai.core import uv_manager
 
     calls = []
@@ -447,10 +533,11 @@ def test_cuda_batch_install_constraint_arg_is_whitespace_free_for_uv(
 
     assert ok is True
     batch_cmd = calls[-1]["cmd"]
+    assert batch_cmd[:3] == ["python", "-m", "pip"]
+    assert "uv" not in batch_cmd
     assert "--constraint" in batch_cmd
     value = batch_cmd[batch_cmd.index("--constraint") + 1]
-    assert not any(c.isspace() for c in value)
-    assert value == "geoai_torch_constraints_xy.txt"
+    assert value == constraints_path
 
 
 def test_truncate_error_keeps_head_and_tail():
