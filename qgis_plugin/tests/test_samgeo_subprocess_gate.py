@@ -7,6 +7,7 @@ gate that routes model loading into the venv subprocess instead.
 
 import sys
 import types
+from pathlib import Path
 
 from geoai.dialogs import samgeo
 from geoai.workers import samgeo_worker
@@ -119,6 +120,12 @@ def test_worker_loads_public_sam31_from_local_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "samgeo", fake_samgeo)
     monkeypatch.setattr(samgeo_worker, "_ensure_pkg_resources_shim", lambda: False)
     monkeypatch.setattr(samgeo_worker, "_resolve_device", lambda _device: "cpu")
+
+    def load_helper(_module_name, relative_path):
+        assert relative_path == str(Path("core") / "sam_models.py")
+        return sam_models
+
+    monkeypatch.setattr(samgeo_worker, "_load_plugin_helper", load_helper)
     monkeypatch.setattr(sam_models, "enable_safetensors_checkpoint", lambda _path: None)
 
     result = samgeo_worker._handle_init(
@@ -138,3 +145,25 @@ def test_worker_loads_public_sam31_from_local_checkpoint(monkeypatch, tmp_path):
     assert captured["load_from_HF"] is False
     assert result["model_name"] == "SamGeo3.1 (public checkpoint)"
     samgeo_worker._cleanup()
+
+
+def test_worker_plugin_helpers_preserve_external_geoai(monkeypatch):
+    external_geoai = types.ModuleType("geoai")
+    external_geoai.origin = "managed-site-packages"
+    monkeypatch.setitem(sys.modules, "geoai", external_geoai)
+    monkeypatch.delitem(
+        sys.modules, "_geoai_worker_pkg_resources_compat", raising=False
+    )
+    monkeypatch.delitem(sys.modules, "_geoai_worker_sam_models", raising=False)
+
+    compat = samgeo_worker._load_plugin_helper(
+        "_geoai_worker_pkg_resources_compat", "_pkg_resources_compat.py"
+    )
+    sam_models = samgeo_worker._load_plugin_helper(
+        "_geoai_worker_sam_models", str(Path("core") / "sam_models.py")
+    )
+
+    assert compat.__file__.endswith("_pkg_resources_compat.py")
+    assert sam_models.__file__.endswith(str(Path("core") / "sam_models.py"))
+    assert sys.modules["geoai"] is external_geoai
+    assert external_geoai.origin == "managed-site-packages"

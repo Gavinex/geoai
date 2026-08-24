@@ -9,6 +9,7 @@ samgeo load outside the QGIS process.
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -103,16 +104,33 @@ def _run_quiet_stdout(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
 
+def _load_plugin_helper(module_name: str, relative_path: str) -> Any:
+    helper_path = Path(__file__).resolve().parents[1] / relative_path
+    module = sys.modules.get(module_name)
+    if module is not None:
+        return module
+
+    spec = importlib.util.spec_from_file_location(module_name, str(helper_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load plugin helper: {helper_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
 def _ensure_pkg_resources_shim() -> bool:
     try:
-        plugin_parent = Path(__file__).resolve().parents[2]
-        plugin_parent_str = str(plugin_parent)
-        if plugin_parent_str not in sys.path:
-            sys.path.insert(0, plugin_parent_str)
-
-        from geoai._pkg_resources_compat import ensure_pkg_resources
-
-        return bool(ensure_pkg_resources())
+        compat = _load_plugin_helper(
+            "_geoai_worker_pkg_resources_compat",
+            "_pkg_resources_compat.py",
+        )
+        return bool(compat.ensure_pkg_resources())
     except Exception:
         return False
 
@@ -207,9 +225,11 @@ def _handle_init(req: dict) -> Any:
         if model_id:
             model_kwargs["model_id"] = model_id
         if checkpoint_path:
-            from geoai.core.sam_models import enable_safetensors_checkpoint
-
-            enable_safetensors_checkpoint(checkpoint_path)
+            sam_models = _load_plugin_helper(
+                "_geoai_worker_sam_models",
+                os.path.join("core", "sam_models.py"),
+            )
+            sam_models.enable_safetensors_checkpoint(checkpoint_path)
             model_kwargs.update(
                 checkpoint_path=checkpoint_path,
                 load_from_HF=False,
